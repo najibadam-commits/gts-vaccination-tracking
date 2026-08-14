@@ -47,8 +47,7 @@ or the working directory — `_find_default` in `app.py`):
 | `LGA.sqlite` | LGA boundaries for the maps | 11 MB |
 | `Ward.sqlite` | Ward boundaries | 23 MB |
 | `state.sqlite` | State boundaries | 8 MB |
-| `organization's reporting template.pptx` | the deck stage 6 fills | 29 MB |
-| `Post Implementation Report sample.pdf` | the PIR template stage 7 uses | 7 MB |
+| `organization's reporting template.pptx` | the deck stage 6 fills | 11 MB |
 | `*.qpt`, `*.qgz` | QGIS map layouts driving stage 4 | <1 MB |
 | `eha_logo.png`, `ehealthafrica blue.png` | branding | small |
 
@@ -169,9 +168,31 @@ git push -u origin main
 
 ## 5. What gets committed
 
-`git add -A` plus the `.gitignore` in this repo yields **~78 MB across ~51
-files**. Every file is well under GitHub's 100 MB per-file hard limit, so **no
-Git LFS is required**.
+`git add -A` plus the `.gitignore` in this repo yields **~54 MB across 51
+files**, the largest being `Ward.sqlite` at 23 MB. Every file is well under
+GitHub's 100 MB per-file hard limit, so **no Git LFS is required**.
+
+### Personal data removed before the first push
+
+The repository is public, so two files were dealt with first:
+
+- **`organization's reporting template.pptx`** shipped as a completed Nasarawa
+  Day 2 report including 17 photographs of eHA field staff. You removed them in
+  PowerPoint; verified afterwards that **0 orphaned media parts** remain in the
+  package — the image parts were deleted, not merely unlinked from the slides,
+  so they cannot be recovered from the file. 28.9 MB → 11.1 MB. Stage 6 builds
+  the deck unchanged.
+- **`Post Implementation Report sample.pdf`** — a real 27-page PIR whose page 26
+  is "ERM Pictures", staff at evening review meetings. Excluded from the repo.
+  Stage 7 never parses it: it checks the path exists and records the filename in
+  the .docx metadata. Without it stage 7 uses its built-in layout and the PIR
+  content is unchanged. Your local copy is untouched and `--pir-template` still
+  accepts it when running locally.
+
+If you ever make a repo like this public *after* committing such files,
+remember that deleting them in a later commit does **not** remove them from
+history — `git log --all --name-only` shows everything that has ever been
+committed.
 
 **Committed** — code, the six asset groups in section 2, `requirements.txt`,
 `.gitignore`, `.streamlit/config.toml`, `README.md`, `DEPLOYMENT.md`, the
