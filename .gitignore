@@ -74,12 +74,16 @@ not_visited_day_*.geojson
 # ---- reference material, not needed to run --------------------------------
 # Kept locally for comparison; excluded to keep the repo installable.
 #
-# NOTE the exception: "Post Implementation Report sample.pdf" is NOT reference
-# material — stage 7 auto-detects it and uses it as the PIR reporting
-# template, so it has to ship. Named explicitly rather than relying on the
-# glob, because that is exactly the kind of thing a later edit gets wrong.
+# "Post Implementation Report sample.pdf" is excluded too, despite stage 7
+# auto-detecting it. It is a real Nasarawa PIR containing photographs of eHA
+# staff at evening review meetings, and this repository is public. Stage 7
+# never opens the file — it checks the path exists and writes the filename
+# into the .docx metadata comment; the report is built entirely by
+# python-docx. Without it, stage 7 logs "No Post Implementation Report sample
+# found — using the built-in default layout" and produces identical content.
+# Keep your local copy: `--pir-template` still accepts it when running
+# locally.
 *sample*.pdf
-!Post Implementation Report sample.pdf
 *sample*.xlsx
 GTS_Pipeline_Workflow_eHA.pptx
 *_title_preview.pptx
