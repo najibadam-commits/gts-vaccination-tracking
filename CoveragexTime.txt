@@ -1,0 +1,125 @@
+"""
+Coverage x Time Cross-Reference Analysis
+=========================================
+Input:  CSV with columns LGA, Ward, Settlement, Visitation Status, GPS Points Count
+Output: prints the cross-reference matrix + risk counts, and exports an .xlsx report.
+
+Usage:
+    pip install pandas numpy openpyxl
+    python coverage_time_analysis.py
+
+Then edit INPUT_CSV below to point to your file.
+"""
+
+import pandas as pd
+import numpy as np
+
+# ---------- Config ----------
+INPUT_CSV   = "settlements.csv"          # <-- your file
+OUTPUT_XLSX = "coverage_time_analysis.xlsx"
+
+COVERAGE_BINS = [(-0.01, 0,   "Not Visited"),
+                 (0,     50,  "Low Coverage"),
+                 (50,    80,  "Partially Covered"),
+                 (80,    100.1, "Fully Covered")]
+
+TIME_BINS = [(-0.01, 0,   "No Tracks"),
+             (0,     12,  "< 12 Mins"),
+             (12,    30,  "12 - 30 mins"),
+             (30,    60,  "30 - 1 Hour"),
+             (60,    120, "1 - 2 Hrs"),
+             (120,   np.inf, "> 2 Hrs")]
+
+COVERAGE_ORDER = ["Not Visited", "Low Coverage", "Partially Covered", "Fully Covered"]
+TIME_ORDER     = ["No Tracks", "< 12 Mins", "12 - 30 mins", "30 - 1 Hour", "1 - 2 Hrs", "> 2 Hrs"]
+RISK_COVERAGE  = ["Not Visited", "Low Coverage"]
+LOW_EFFORT_TIME  = ["No Tracks", "< 12 Mins"]
+TARGETING_TIME   = ["1 - 2 Hrs", "> 2 Hrs"]
+
+
+def normalize(s):
+    """Trim + collapse internal whitespace (matches the web app's dedup logic)."""
+    if pd.isna(s):
+        return ""
+    return " ".join(str(s).strip().split())
+
+
+def coverage_category(pct):
+    for lo, hi, label in COVERAGE_BINS:
+        if lo < pct <= hi:
+            return label
+    return "Not Visited"
+
+
+def time_category(minutes):
+    for lo, hi, label in TIME_BINS:
+        if lo < minutes <= hi:
+            return label
+    return "No Tracks"
+
+
+def main():
+    # 1. Load
+    df = pd.read_csv(INPUT_CSV)
+
+    # 2. Normalize the grouping fields (whitespace + case-insensitive grouping)
+    df["LGA"]              = df["LGA"].map(normalize)
+    df["Ward"]             = df["Ward"].map(normalize)
+    df["Settlement"]       = df["Settlement"].map(normalize)
+    df["Visitation Status"] = df["Visitation Status"].map(normalize).str.lower()
+    df["GPS Points Count"]  = pd.to_numeric(df["GPS Points Count"], errors="coerce").fillna(0)
+
+    # Drop fully empty rows
+    df = df[~((df["LGA"] == "") & (df["Ward"] == "") & (df["Settlement"] == ""))]
+
+    # 3. Group by LGA + Ward + Settlement (case-insensitive key)
+    df["__key"] = (df["LGA"].str.lower() + "|||" +
+                   df["Ward"].str.lower() + "|||" +
+                   df["Settlement"].str.lower())
+
+    grouped = df.groupby("__key").agg(
+        LGA=("LGA", "first"),
+        Ward=("Ward", "first"),
+        Settlement=("Settlement", "first"),
+        PointsVisited=("Visitation Status", lambda s: s.isin(["visited", "visit"]).sum()),
+        TotalPoints=("Visitation Status", "size"),
+        MinutesTracked=("GPS Points Count", "sum"),
+    ).reset_index(drop=True)
+
+    # 4. Derived metrics
+    grouped["PctVisitation"]    = np.where(grouped["TotalPoints"] > 0,
+                                           grouped["PointsVisited"] / grouped["TotalPoints"] * 100, 0)
+    grouped["CoverageCategory"] = grouped["PctVisitation"].map(coverage_category)
+    grouped["TimeCategory"]     = grouped["MinutesTracked"].map(time_category)
+
+    # 5. Cross-reference matrix (Coverage rows x Time columns)
+    matrix = (grouped.groupby(["CoverageCategory", "TimeCategory"]).size()
+                     .unstack(fill_value=0)
+                     .reindex(index=COVERAGE_ORDER, columns=TIME_ORDER, fill_value=0))
+
+    print("=== Coverage x Time Cross-Reference (settlement counts) ===\n")
+    print(matrix.to_string())
+    print()
+
+    # 6. Risk groups
+    low_effort = grouped[grouped["CoverageCategory"].isin(RISK_COVERAGE) &
+                         grouped["TimeCategory"].isin(LOW_EFFORT_TIME)]
+    targeting  = grouped[grouped["CoverageCategory"].isin(RISK_COVERAGE) &
+                         grouped["TimeCategory"].isin(TARGETING_TIME)]
+
+    print(f"Low-effort risk (never got there): {len(low_effort)} settlements")
+    print(f"Targeting risk (on ground a while but missed most): {len(targeting)} settlements")
+    print()
+
+    # 7. Excel export
+    with pd.ExcelWriter(OUTPUT_XLSX, engine="openpyxl") as xl:
+        matrix.to_excel(xl, sheet_name="Coverage x Time")
+        low_effort.to_excel(xl,  sheet_name="Low-effort Risk", index=False)
+        targeting.to_excel(xl,   sheet_name="Targeting Risk",  index=False)
+        grouped.to_excel(xl,     sheet_name="All Settlements", index=False)
+
+    print(f"Report saved to {OUTPUT_XLSX}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,29 @@
+# Streamlit configuration committed to the repo.
+#
+# NOTE ON UPLOAD SIZE. Locally this was 4000 MB, which suits a workstation
+# holding a whole campaign's track exports. Streamlit Community Cloud gives the
+# app roughly 1 GB of RAM for everything — the upload buffer, the merged
+# DataFrame, the geopandas spatial join and the map rasters all come out of the
+# same budget — so a 4 GB upload cannot succeed there; it just fails slowly and
+# opaquely after a long wait.
+#
+# 400 MB is set here as a limit the free tier can actually survive. It is not a
+# statement about what the pipeline can handle: on your own machine, raise it.
+# `cloud_limits.py` reads this value back and warns the analyst before a run
+# that looks too big, rather than letting it die mid-stage.
+[server]
+maxUploadSize = 400
+maxMessageSize = 400
+enableXsrfProtection = true
+enableCORS = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#1F4E79"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F7FB"
+textColor = "#1A2433"
+font = "sans serif"

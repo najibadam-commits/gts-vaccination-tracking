@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# GTS pipeline — what must NOT go into the repository.
+#
+# Two rules behind everything below:
+#   1. campaign DATA never leaves the machine it was analysed on. Track exports
+#      carry team codes and GPS traces; settlement lists carry population
+#      estimates. None of it belongs in a public GitHub repo.
+#   2. anything the pipeline GENERATES is rebuilt on every run, so committing
+#      it only creates merge conflicts and bloat.
+# ---------------------------------------------------------------------------
+
+# ---- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.Python
+
+# ---- secrets --------------------------------------------------------------
+# Streamlit secrets are configured in the Cloud dashboard, never committed.
+.streamlit/secrets.toml
+.env
+*.pem
+*.key
+
+# ---- campaign data (NEVER commit) -----------------------------------------
+# Raw GTS track exports and the merged file built from them.
+Tracks_*.csv
+merged_tracks.csv
+*_tracks.csv
+tracks.parquet
+
+# Planned settlement lists / DIPs.
+settlement*.csv
+*settlement*.csv
+!*/settlement_template.csv
+
+# ---- pipeline outputs (regenerated every run) -----------------------------
+Day*_out*/
+*_outputs/
+outputs/
+.ckpt/
+charts/
+maps/
+*_settlement_visitation.csv
+team_deploy_day_*.csv
+time_spent_day_*.csv
+flagged_teams_day_*.csv
+*_ERM_Analysis.xlsx
+*_Report.pptx
+*_Report.docx
+*_Post_Implementation_Report.docx
+gridded_ta_day_*.parquet
+gridded_ta_day_*.gpkg
+visited_day_*.geojson
+not_visited_day_*.geojson
+
+# ---- QGIS working layers --------------------------------------------------
+# Exported analysis layers, not pipeline inputs. ~100 MB and rebuilt in QGIS.
+# The three BOUNDARY files the app needs are whitelisted below.
+*.sqlite
+!LGA.sqlite
+!Ward.sqlite
+!state.sqlite
+*.sqlite-journal
+*.gpkg-journal
+*.qmd
+
+# ---- reference material, not needed to run --------------------------------
+# Kept locally for comparison; excluded to keep the repo installable.
+#
+# NOTE the exception: "Post Implementation Report sample.pdf" is NOT reference
+# material — stage 7 auto-detects it and uses it as the PIR reporting
+# template, so it has to ship. Named explicitly rather than relying on the
+# glob, because that is exactly the kind of thing a later edit gets wrong.
+*sample*.pdf
+!Post Implementation Report sample.pdf
+*sample*.xlsx
+GTS_Pipeline_Workflow_eHA.pptx
+*_title_preview.pptx
+pipeline_flow_diagram.png
+
+# ---- test scratch files ---------------------------------------------------
+# test_daily_time_spent.py writes this when run from the repo folder.
+dt.csv
+tr.csv
+tr2.csv
+
+# ---- editor / OS ----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*
