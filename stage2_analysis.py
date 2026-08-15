@@ -460,10 +460,60 @@ def load_track_points(path: str | Path, chunksize: int = 500_000,
     return out
 
 
+def _drop_bad_geometry(gdf: gpd.GeoDataFrame, source: str) -> gpd.GeoDataFrame:
+    """Remove rows whose geometry could not be read, and say which they were.
+
+    A degenerate polygon — a ring of two points, say — cannot be repaired into
+    a valid one: there is no area to recover. Dropping it costs that single
+    settlement's extent; keeping it costs the entire run. The count and a few
+    names are printed so the fault can be fixed in QGIS upstream rather than
+    silently absorbed every day.
+    """
+    if "geometry" not in gdf.columns or not len(gdf):
+        return gdf
+    bad = gdf.geometry.isna() | gdf.geometry.is_empty
+    if not bad.any():
+        return gdf
+
+    label_col = next((c for c in gdf.columns
+                      if any(k in str(c).lower()
+                             for k in ("settlement", "name", "ward", "lga"))), None)
+    names = ""
+    if label_col:
+        sample = gdf.loc[bad, label_col].dropna().astype(str).unique()[:5]
+        if len(sample):
+            names = " — e.g. " + ", ".join(sample)
+    print(f"  WARNING: {int(bad.sum()):,} of {len(gdf):,} features in "
+          f"{os.path.basename(source)} have invalid or empty geometry and were "
+          f"dropped{names}. Fix these in QGIS so they are not lost every run.")
+
+    kept = gdf[~bad]
+    if not len(kept):
+        raise ValueError(
+            f"Every feature in {os.path.basename(source)} has invalid geometry, "
+            f"so there is nothing to analyse. Re-export the layer from QGIS "
+            f"after running Vector → Geometry Tools → Check Validity.")
+    return kept
+
+
 def read_spatial(path: str | Path) -> gpd.GeoDataFrame:
+    """Read a spatial layer, tolerating features with broken geometry.
+
+    pyogrio 0.13 defaults to `on_invalid="raise"`, so ONE malformed polygon
+    anywhere in a settlement-extent layer aborts the whole run with
+
+        GEOSException: Invalid number of points in LinearRing found 2
+
+    naming neither the file nor the feature. Earlier versions only warned,
+    which is why a layer that works on one machine can fail on another. Reading
+    with `on_invalid="warn"` turns those features into nulls, which
+    `_drop_bad_geometry` then removes and reports.
+    """
     path = str(path)
     if path.endswith(".parquet"):
-        return gpd.read_parquet(path)
+        return _drop_bad_geometry(gpd.read_parquet(path), path)
+
+    kwargs = {}
     if path.endswith(".sqlite"):
         # spatialite files may hold several tables; pick the data layer
         import pyogrio
@@ -471,8 +521,14 @@ def read_spatial(path: str | Path) -> gpd.GeoDataFrame:
         names = [l[0] for l in layers]
         skip = {"data_licenses", "sql_statements_log", "elementarygeometries", "knn2"}
         data_layers = [n for n in names if n.lower() not in skip]
-        return gpd.read_file(path, layer=data_layers[0] if data_layers else names[0])
-    return gpd.read_file(path)
+        kwargs["layer"] = data_layers[0] if data_layers else names[0]
+
+    try:
+        gdf = gpd.read_file(path, on_invalid="warn", **kwargs)
+    except TypeError:
+        # older geopandas/fiona engine has no on_invalid; it warns by default
+        gdf = gpd.read_file(path, **kwargs)
+    return _drop_bad_geometry(gdf, path)
 
 
 def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,
