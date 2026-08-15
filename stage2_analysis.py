@@ -325,8 +325,15 @@ LOCAL_UTC_OFFSET = pd.Timedelta(hours=1)
 
 
 def _local_dates(series: pd.Series) -> pd.Series:
-    ts = pd.to_datetime(series, format=TRACK_TIMESTAMP_FORMAT, errors="coerce")
-    return (ts + LOCAL_UTC_OFFSET).dt.strftime("%Y-%m-%d")
+    from track_columns import parse_timestamps
+    return (parse_timestamps(series) + LOCAL_UTC_OFFSET).dt.strftime("%Y-%m-%d")
+
+
+def _track_cols(path):
+    """Resolve a track export's columns by meaning — see track_columns."""
+    from track_columns import read_columns, resolve
+    header = read_columns(path)
+    return header, resolve(header)
 
 
 # A reporting day must carry at least this share of the busiest day's pings to
@@ -349,12 +356,14 @@ def track_date_counts(path: str | Path, chunksize: int = 1_000_000) -> pd.Series
         return pd.Series(dtype="int64")
     counts: dict[str, int] = {}
     try:
-        reader = pd.read_csv(path, usecols=lambda c: c == TRACK_TIMESTAMP_COL,
+        _, cols = _track_cols(path)
+        ts_col = cols["ts"]
+        if not ts_col:
+            return pd.Series(dtype="int64")
+        reader = pd.read_csv(path, usecols=lambda c: c == ts_col,
                              chunksize=chunksize, dtype=str)
         for chunk in reader:
-            if TRACK_TIMESTAMP_COL not in chunk.columns:
-                return pd.Series(dtype="int64")
-            for day, n in _local_dates(chunk[TRACK_TIMESTAMP_COL]).value_counts().items():
+            for day, n in _local_dates(chunk[ts_col]).value_counts().items():
                 counts[day] = counts.get(day, 0) + int(n)
     except (ValueError, KeyError):
         return pd.Series(dtype="int64")
@@ -411,17 +420,21 @@ def load_track_points(path: str | Path, chunksize: int = 500_000,
         gdf = read_spatial(path)
         pts = pd.DataFrame({"Lon": gdf.geometry.x, "Lat": gdf.geometry.y})
     else:
-        wanted = ["Lat", "Lon"] + ([TRACK_TIMESTAMP_COL] if track_date else [])
+        from track_columns import require
+        header, cols = _track_cols(path)
+        require(cols, ("lat", "lon"), header, "Settlement visitation analysis")
+        lat_col, lon_col, ts_col = cols["lat"], cols["lon"], cols["ts"]
+        if track_date:
+            require(cols, ("ts",), header, f"Scoping tracks to {track_date}")
+
+        wanted = {lat_col, lon_col} | ({ts_col} if track_date else set())
         chunks = []
         kept = dropped = 0
-        for chunk in pd.read_csv(path, usecols=lambda c: c in set(wanted),
+        for chunk in pd.read_csv(path, usecols=lambda c: c in wanted,
                                  chunksize=chunksize):
+            chunk = chunk.rename(columns={lat_col: "Lat", lon_col: "Lon"})
             if track_date:
-                if TRACK_TIMESTAMP_COL not in chunk.columns:
-                    raise ValueError(
-                        f"Track export has no '{TRACK_TIMESTAMP_COL}' column, so "
-                        f"pings cannot be scoped to {track_date}.")
-                on_day = _local_dates(chunk[TRACK_TIMESTAMP_COL]) == track_date
+                on_day = _local_dates(chunk[ts_col]) == track_date
                 dropped += int((~on_day).sum())
                 chunk = chunk[on_day]
                 kept += len(chunk)

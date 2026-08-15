@@ -62,15 +62,6 @@ def _norm_place(series: pd.Series) -> pd.Series:
             .str.replace(r"\s+", " ", regex=True).str.strip().str.title())
 
 
-def _find_state_col(columns) -> str | None:
-    """A state column in the track export, if it carries one."""
-    for col in columns:
-        low = str(col).lower()
-        if "state" in low and "code" not in low and "id" not in low:
-            return col
-    return None
-
-
 def scope_from_visitation(visitation) -> dict:
     """The state scope to filter tracks by, taken from the day's visitation CSV.
 
@@ -170,9 +161,18 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
     want_lgas = scope.get("lgas") or frozenset()
     want_teams = scope.get("teams") or frozenset()
 
-    keep = {TS_COL, TEAM_COL, LGA_COL}
-    header = pd.read_csv(tracks_file, nrows=0)
-    state_col = _find_state_col(header.columns) if want_state else None
+    from track_columns import (parse_timestamps, read_columns, require,
+                               resolve as resolve_cols)
+
+    # Resolved by meaning, not by exact name — see track_columns. The export's
+    # LGA field carries a boundary year and changes with each release.
+    header = read_columns(tracks_file)
+    cols = resolve_cols(header)
+    require(cols, ("team", "ts"), header, "Daily time spent")
+    ts_col, team_col, lga_col = cols["ts"], cols["team"], cols["lga"]
+
+    keep = {c for c in (ts_col, team_col, lga_col) if c}
+    state_col = cols["state"] if want_state else None
     if state_col:
         keep.add(state_col)
 
@@ -190,30 +190,26 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
     seen = kept = 0
     for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in keep,
                              chunksize=chunksize, dtype=str):
-        if TS_COL not in chunk.columns or TEAM_COL not in chunk.columns:
-            raise ValueError(
-                f"Track export needs '{TS_COL}' and '{TEAM_COL}' to measure "
-                f"daily tracking time; it has {list(chunk.columns)}")
-        chunk = chunk.dropna(subset=[TEAM_COL])
+        chunk = chunk.dropna(subset=[team_col])
         seen += len(chunk)
 
         if state_col and state_col in chunk.columns:
             chunk = chunk[_norm_place(chunk[state_col]) == want_state]
-        elif want_lgas and LGA_COL in chunk.columns:
-            chunk = chunk[_norm_place(chunk[LGA_COL]).isin(want_lgas)]
+        elif want_lgas and lga_col and lga_col in chunk.columns:
+            chunk = chunk[_norm_place(chunk[lga_col]).isin(want_lgas)]
         elif want_teams:
-            chunk = chunk[chunk[TEAM_COL].astype(str).str.strip().isin(want_teams)]
+            chunk = chunk[chunk[team_col].astype(str).str.strip().isin(want_teams)]
         kept += len(chunk)
         if not len(chunk):
             continue
 
-        ts = pd.to_datetime(chunk[TS_COL], format=TS_FORMAT, errors="coerce")
+        ts = parse_timestamps(chunk[ts_col])
         local = ts + LOCAL_OFFSET
         part = pd.DataFrame({
             "date": local.dt.strftime("%Y-%m-%d"),
-            "team_code": chunk[TEAM_COL].astype(str).str.strip(),
-            "lga": (chunk[LGA_COL].astype(str).str.strip()
-                    if LGA_COL in chunk.columns else ""),
+            "team_code": chunk[team_col].astype(str).str.strip(),
+            "lga": (chunk[lga_col].astype(str).str.strip()
+                    if lga_col and lga_col in chunk.columns else ""),
             "_ts": local,
         })
         parts.append(part.dropna(subset=["_ts"]))

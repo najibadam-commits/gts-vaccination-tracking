@@ -42,15 +42,31 @@ def load_tracks_teams(tracks_file: str, chunksize: int = 500_000) -> pd.DataFram
     whole timestamp, not just the hour, so a 23:30 UTC ping moves to the next
     local date instead of wrapping to hour 0 on the wrong day.
     """
-    cols = {"NGA LGA 2024 Label", "Team Code", "GPS Timestamp (UTC)"}
+    from track_columns import (parse_timestamps, read_columns, require,
+                               resolve as resolve_cols)
+
+    # Columns are resolved by MEANING, not by exact name — the export's LGA
+    # field carries a boundary year ("NGA LGA 2024 Label") and changes with
+    # each release. Matching exactly meant `usecols` kept nothing and the
+    # failure surfaced later as `KeyError: 'lga'` from the groupby below.
+    header = read_columns(tracks_file)
+    cols = resolve_cols(header)
+    require(cols, ("team", "ts"), header, "Time Spent Analysis")
+    wanted = {c for c in (cols["lga"], cols["team"], cols["ts"]) if c}
+
     parts = []
-    for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in cols,
+    for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in wanted,
                              chunksize=chunksize, dtype=str):
-        chunk = chunk.rename(columns={"NGA LGA 2024 Label": "lga",
-                                      "Team Code": "team_code",
-                                      "GPS Timestamp (UTC)": "ts"})
+        rename = {cols["team"]: "team_code", cols["ts"]: "ts"}
+        if cols["lga"]:
+            rename[cols["lga"]] = "lga"
+        chunk = chunk.rename(columns=rename)
+        if "lga" not in chunk.columns:
+            # LGA is only a reporting grain here; without it every team still
+            # gets counted, just not split by LGA.
+            chunk["lga"] = ""
         chunk = chunk.dropna(subset=["team_code"])
-        ts = pd.to_datetime(chunk["ts"], format="%m/%d/%Y %H:%M:%S", errors="coerce")
+        ts = parse_timestamps(chunk["ts"])
         local = ts + pd.Timedelta(hours=1)  # UTC -> UTC+1 local
         chunk["date"] = local.dt.strftime("%Y-%m-%d")
         chunk["hour"] = local.dt.hour
