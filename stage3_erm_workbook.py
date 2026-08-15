@@ -328,7 +328,37 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
     state_lgas = set(dip[lga_col].dropna())
     tracks_teams = tracks_teams.copy()
     tracks_teams["lga"] = norm_lga(tracks_teams["lga"])
+
+    # Some GTS exports carry no LGA column at all — only Team Code. Without a
+    # backfill the state filter below would match nothing and the whole report
+    # would read "0 teams reported", which is worse than crashing because it
+    # looks like a finding. The settlement list already maps every team code to
+    # its LGA, so it is used as the lookup; teams absent from it are not in this
+    # campaign's state and are dropped by the filter, exactly as intended.
+    team_col_dip = next((c for c in dip.columns
+                         if "team" in c.lower() and "code" in c.lower()), None)
+    blank = tracks_teams["lga"].isin(["", "Nan", "None"])
+    if team_col_dip and blank.any():
+        lookup = (dip.dropna(subset=[team_col_dip])
+                  .drop_duplicates(subset=[team_col_dip])
+                  .set_index(dip[team_col_dip].astype(str).str.strip()
+                             .loc[lambda x: ~x.duplicated()])[lga_col])
+        filled = tracks_teams.loc[blank, "team_code"].astype(str).str.strip().map(lookup)
+        tracks_teams.loc[blank, "lga"] = filled.fillna("")
+        n = int(filled.notna().sum())
+        print(f"  track export has no LGA column — {n:,} of {int(blank.sum()):,} "
+              f"team-rows matched to an LGA via the settlement list's team codes")
+
+    before = int(tracks_teams["team_code"].nunique())
     tracks_teams = tracks_teams[tracks_teams["lga"].isin(state_lgas)]
+    after = int(tracks_teams["team_code"].nunique())
+    if before != after:
+        print(f"  national export scoped to {state}: {after:,} of {before:,} "
+              f"teams belong to this campaign's LGAs")
+    if not after:
+        print("  WARNING: no team in the track export matches an LGA in the "
+              "settlement list. Check that the settlement list is for the same "
+              "state and campaign as these tracks.")
 
     deploy = team_deploy_report(dip, tracks_teams, teams_deployed_total=teams_deployed_total)
     # Daily analysis reports the day the tracks were transmitted, so time spent

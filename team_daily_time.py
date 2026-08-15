@@ -88,12 +88,23 @@ def scope_from_visitation(visitation) -> dict:
 
     states = (set(_norm_place(dip[state_col]).dropna()) - {"", "Nan", "None"}
               if state_col else set())
+    # team code -> LGA. Some GTS exports carry no LGA column at all (only Team
+    # Code), so the per-LGA breakdown has to be reconstructed from the
+    # settlement list. It is also the fallback that lets state scoping work on
+    # such an export, via the team-code route.
+    lga_by_team = {}
+    if team_col and lga_col:
+        pair = dip[[team_col, lga_col]].dropna()
+        lga_by_team = dict(zip(pair[team_col].astype(str).str.strip(),
+                               _norm_place(pair[lga_col])))
+
     return {
         "state": next(iter(states)) if len(states) == 1 else None,
         "lgas": (frozenset(_norm_place(dip[lga_col]).dropna()) - {"", "Nan", "None"}
                  if lga_col else frozenset()),
         "teams": (frozenset(dip[team_col].dropna().astype(str).str.strip())
                   - {""} if team_col else frozenset()),
+        "lga_by_team": lga_by_team,
     }
 
 # Gaps longer than this are treated as "not tracking" and excluded from the
@@ -227,6 +238,14 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
 
     allp = pd.concat(parts, ignore_index=True)
     allp = allp[allp["team_code"] != ""]
+
+    # No LGA column in the export: recover it from the settlement list so the
+    # per-LGA follow-up table on the slide is not a single blank row.
+    lga_by_team = scope.get("lga_by_team") or {}
+    if lga_by_team and not allp["lga"].astype(str).str.strip().any():
+        allp["lga"] = allp["team_code"].map(lga_by_team).fillna("")
+        print(f"  LGA recovered from the settlement list for "
+              f"{int((allp['lga'] != '').sum()):,} of {len(allp):,} ping rows")
 
     grouped = allp.groupby(["date", "team_code"], dropna=False)
     out = grouped.agg(Pings=("_ts", "size"),
