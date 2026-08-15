@@ -42,15 +42,31 @@ def load_tracks_teams(tracks_file: str, chunksize: int = 500_000) -> pd.DataFram
     whole timestamp, not just the hour, so a 23:30 UTC ping moves to the next
     local date instead of wrapping to hour 0 on the wrong day.
     """
-    cols = {"NGA LGA 2024 Label", "Team Code", "GPS Timestamp (UTC)"}
+    from track_columns import (parse_timestamps, read_columns, require,
+                               resolve as resolve_cols)
+
+    # Columns are resolved by MEANING, not by exact name — the export's LGA
+    # field carries a boundary year ("NGA LGA 2024 Label") and changes with
+    # each release. Matching exactly meant `usecols` kept nothing and the
+    # failure surfaced later as `KeyError: 'lga'` from the groupby below.
+    header = read_columns(tracks_file)
+    cols = resolve_cols(header)
+    require(cols, ("team", "ts"), header, "Time Spent Analysis")
+    wanted = {c for c in (cols["lga"], cols["team"], cols["ts"]) if c}
+
     parts = []
-    for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in cols,
+    for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in wanted,
                              chunksize=chunksize, dtype=str):
-        chunk = chunk.rename(columns={"NGA LGA 2024 Label": "lga",
-                                      "Team Code": "team_code",
-                                      "GPS Timestamp (UTC)": "ts"})
+        rename = {cols["team"]: "team_code", cols["ts"]: "ts"}
+        if cols["lga"]:
+            rename[cols["lga"]] = "lga"
+        chunk = chunk.rename(columns=rename)
+        if "lga" not in chunk.columns:
+            # LGA is only a reporting grain here; without it every team still
+            # gets counted, just not split by LGA.
+            chunk["lga"] = ""
         chunk = chunk.dropna(subset=["team_code"])
-        ts = pd.to_datetime(chunk["ts"], format="%m/%d/%Y %H:%M:%S", errors="coerce")
+        ts = parse_timestamps(chunk["ts"])
         local = ts + pd.Timedelta(hours=1)  # UTC -> UTC+1 local
         chunk["date"] = local.dt.strftime("%Y-%m-%d")
         chunk["hour"] = local.dt.hour
@@ -312,7 +328,37 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
     state_lgas = set(dip[lga_col].dropna())
     tracks_teams = tracks_teams.copy()
     tracks_teams["lga"] = norm_lga(tracks_teams["lga"])
+
+    # Some GTS exports carry no LGA column at all — only Team Code. Without a
+    # backfill the state filter below would match nothing and the whole report
+    # would read "0 teams reported", which is worse than crashing because it
+    # looks like a finding. The settlement list already maps every team code to
+    # its LGA, so it is used as the lookup; teams absent from it are not in this
+    # campaign's state and are dropped by the filter, exactly as intended.
+    team_col_dip = next((c for c in dip.columns
+                         if "team" in c.lower() and "code" in c.lower()), None)
+    blank = tracks_teams["lga"].isin(["", "Nan", "None"])
+    if team_col_dip and blank.any():
+        lookup = (dip.dropna(subset=[team_col_dip])
+                  .drop_duplicates(subset=[team_col_dip])
+                  .set_index(dip[team_col_dip].astype(str).str.strip()
+                             .loc[lambda x: ~x.duplicated()])[lga_col])
+        filled = tracks_teams.loc[blank, "team_code"].astype(str).str.strip().map(lookup)
+        tracks_teams.loc[blank, "lga"] = filled.fillna("")
+        n = int(filled.notna().sum())
+        print(f"  track export has no LGA column — {n:,} of {int(blank.sum()):,} "
+              f"team-rows matched to an LGA via the settlement list's team codes")
+
+    before = int(tracks_teams["team_code"].nunique())
     tracks_teams = tracks_teams[tracks_teams["lga"].isin(state_lgas)]
+    after = int(tracks_teams["team_code"].nunique())
+    if before != after:
+        print(f"  national export scoped to {state}: {after:,} of {before:,} "
+              f"teams belong to this campaign's LGAs")
+    if not after:
+        print("  WARNING: no team in the track export matches an LGA in the "
+              "settlement list. Check that the settlement list is for the same "
+              "state and campaign as these tracks.")
 
     deploy = team_deploy_report(dip, tracks_teams, teams_deployed_total=teams_deployed_total)
     # Daily analysis reports the day the tracks were transmitted, so time spent
