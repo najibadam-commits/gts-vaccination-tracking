@@ -70,12 +70,7 @@ def step_merge(args, state, t0):
             with open(csv_file, "r", encoding="utf-8", errors="ignore") as f:
                 header = f.readline().rstrip("\n").split(",")
                 n = len(header)
-                from track_columns import resolve as _rc
-                _c = _rc(header)
-                if not (_c["lat"] and _c["lon"]):
-                    sys.exit(f"{base} has no latitude/longitude column. "
-                             f"It has: {', '.join(header)}")
-                lat_i, lon_i = header.index(_c["lat"]), header.index(_c["lon"])
+                lat_i, lon_i = header.index("Lat"), header.index("Lon")
                 if not wrote_header:
                     writer.writerow(header + ["source_file"])
                     wrote_header = True
@@ -128,24 +123,17 @@ def step_scan(args, state, t0):
         state["track_date"] = track_date
         print(f"scan scoped to transmission date: {track_date or 'all dates'}")
 
-    # Columns resolved by meaning, not by exact name — the export's LGA field
-    # carries a boundary year and changes with each release. See track_columns.
-    from track_columns import (parse_timestamps, read_columns, require,
-                               resolve as resolve_cols)
-    header = read_columns(merged)
-    cols = resolve_cols(header)
-    require(cols, ("lat", "lon", "team", "ts"), header, "Track scan")
-    lat_c, lon_c, team_c, ts_c, lga_c = (cols["lat"], cols["lon"], cols["team"],
-                                         cols["ts"], cols["lga"])
-    usecols = [c for c in (lat_c, lon_c, lga_c, team_c, ts_c) if c]
+    usecols = ["Lat", "Lon", "NGA LGA 2024 Label", "Team Code", "GPS Timestamp (UTC)"]
     reader = pd.read_csv(merged, usecols=usecols, chunksize=chunksize,
-                         dtype={c: str for c in (lga_c, team_c, ts_c) if c},
+                         dtype={"NGA LGA 2024 Label": str, "Team Code": str,
+                                "GPS Timestamp (UTC)": str},
                          skiprows=range(1, chunk_no * chunksize + 1))
     done = True
     for chunk in reader:
-        chunk = chunk.rename(columns={lat_c: "Lat", lon_c: "Lon"})
         if track_date:
-            local_all = parse_timestamps(chunk[ts_c]) + pd.Timedelta(hours=1)
+            local_all = (pd.to_datetime(chunk["GPS Timestamp (UTC)"],
+                                        format="%m/%d/%Y %H:%M:%S", errors="coerce")
+                         + pd.Timedelta(hours=1))
             chunk = chunk[local_all.dt.strftime("%Y-%m-%d") == track_date]
             if not len(chunk):
                 chunk_no += 1
@@ -154,13 +142,9 @@ def step_scan(args, state, t0):
         coord = c if coord is None else (
             pd.concat([coord, c]).groupby(["Lon", "Lat"], as_index=False)["weight"].sum())
 
-        rename = {team_c: "team_code", ts_c: "ts"}
-        if lga_c:
-            rename[lga_c] = "lga"
-        t = chunk.rename(columns=rename).dropna(subset=["team_code"])
-        if "lga" not in t.columns:
-            t["lga"] = ""
-        ts = parse_timestamps(t["ts"])
+        t = chunk.rename(columns={"NGA LGA 2024 Label": "lga", "Team Code": "team_code",
+                                  "GPS Timestamp (UTC)": "ts"}).dropna(subset=["team_code"])
+        ts = pd.to_datetime(t["ts"], format="%m/%d/%Y %H:%M:%S", errors="coerce")
         local = ts + pd.Timedelta(hours=1)  # UTC -> UTC+1
         # `date` matches stage3.load_tracks_teams so time spent can be scoped to
         # the day the tracks were transmitted in both runners

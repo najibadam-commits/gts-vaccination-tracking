@@ -325,15 +325,8 @@ LOCAL_UTC_OFFSET = pd.Timedelta(hours=1)
 
 
 def _local_dates(series: pd.Series) -> pd.Series:
-    from track_columns import parse_timestamps
-    return (parse_timestamps(series) + LOCAL_UTC_OFFSET).dt.strftime("%Y-%m-%d")
-
-
-def _track_cols(path):
-    """Resolve a track export's columns by meaning — see track_columns."""
-    from track_columns import read_columns, resolve
-    header = read_columns(path)
-    return header, resolve(header)
+    ts = pd.to_datetime(series, format=TRACK_TIMESTAMP_FORMAT, errors="coerce")
+    return (ts + LOCAL_UTC_OFFSET).dt.strftime("%Y-%m-%d")
 
 
 # A reporting day must carry at least this share of the busiest day's pings to
@@ -356,14 +349,12 @@ def track_date_counts(path: str | Path, chunksize: int = 1_000_000) -> pd.Series
         return pd.Series(dtype="int64")
     counts: dict[str, int] = {}
     try:
-        _, cols = _track_cols(path)
-        ts_col = cols["ts"]
-        if not ts_col:
-            return pd.Series(dtype="int64")
-        reader = pd.read_csv(path, usecols=lambda c: c == ts_col,
+        reader = pd.read_csv(path, usecols=lambda c: c == TRACK_TIMESTAMP_COL,
                              chunksize=chunksize, dtype=str)
         for chunk in reader:
-            for day, n in _local_dates(chunk[ts_col]).value_counts().items():
+            if TRACK_TIMESTAMP_COL not in chunk.columns:
+                return pd.Series(dtype="int64")
+            for day, n in _local_dates(chunk[TRACK_TIMESTAMP_COL]).value_counts().items():
                 counts[day] = counts.get(day, 0) + int(n)
     except (ValueError, KeyError):
         return pd.Series(dtype="int64")
@@ -420,21 +411,17 @@ def load_track_points(path: str | Path, chunksize: int = 500_000,
         gdf = read_spatial(path)
         pts = pd.DataFrame({"Lon": gdf.geometry.x, "Lat": gdf.geometry.y})
     else:
-        from track_columns import require
-        header, cols = _track_cols(path)
-        require(cols, ("lat", "lon"), header, "Settlement visitation analysis")
-        lat_col, lon_col, ts_col = cols["lat"], cols["lon"], cols["ts"]
-        if track_date:
-            require(cols, ("ts",), header, f"Scoping tracks to {track_date}")
-
-        wanted = {lat_col, lon_col} | ({ts_col} if track_date else set())
+        wanted = ["Lat", "Lon"] + ([TRACK_TIMESTAMP_COL] if track_date else [])
         chunks = []
         kept = dropped = 0
-        for chunk in pd.read_csv(path, usecols=lambda c: c in wanted,
+        for chunk in pd.read_csv(path, usecols=lambda c: c in set(wanted),
                                  chunksize=chunksize):
-            chunk = chunk.rename(columns={lat_col: "Lat", lon_col: "Lon"})
             if track_date:
-                on_day = _local_dates(chunk[ts_col]) == track_date
+                if TRACK_TIMESTAMP_COL not in chunk.columns:
+                    raise ValueError(
+                        f"Track export has no '{TRACK_TIMESTAMP_COL}' column, so "
+                        f"pings cannot be scoped to {track_date}.")
+                on_day = _local_dates(chunk[TRACK_TIMESTAMP_COL]) == track_date
                 dropped += int((~on_day).sum())
                 chunk = chunk[on_day]
                 kept += len(chunk)
@@ -460,60 +447,10 @@ def load_track_points(path: str | Path, chunksize: int = 500_000,
     return out
 
 
-def _drop_bad_geometry(gdf: gpd.GeoDataFrame, source: str) -> gpd.GeoDataFrame:
-    """Remove rows whose geometry could not be read, and say which they were.
-
-    A degenerate polygon — a ring of two points, say — cannot be repaired into
-    a valid one: there is no area to recover. Dropping it costs that single
-    settlement's extent; keeping it costs the entire run. The count and a few
-    names are printed so the fault can be fixed in QGIS upstream rather than
-    silently absorbed every day.
-    """
-    if "geometry" not in gdf.columns or not len(gdf):
-        return gdf
-    bad = gdf.geometry.isna() | gdf.geometry.is_empty
-    if not bad.any():
-        return gdf
-
-    label_col = next((c for c in gdf.columns
-                      if any(k in str(c).lower()
-                             for k in ("settlement", "name", "ward", "lga"))), None)
-    names = ""
-    if label_col:
-        sample = gdf.loc[bad, label_col].dropna().astype(str).unique()[:5]
-        if len(sample):
-            names = " — e.g. " + ", ".join(sample)
-    print(f"  WARNING: {int(bad.sum()):,} of {len(gdf):,} features in "
-          f"{os.path.basename(source)} have invalid or empty geometry and were "
-          f"dropped{names}. Fix these in QGIS so they are not lost every run.")
-
-    kept = gdf[~bad]
-    if not len(kept):
-        raise ValueError(
-            f"Every feature in {os.path.basename(source)} has invalid geometry, "
-            f"so there is nothing to analyse. Re-export the layer from QGIS "
-            f"after running Vector → Geometry Tools → Check Validity.")
-    return kept
-
-
 def read_spatial(path: str | Path) -> gpd.GeoDataFrame:
-    """Read a spatial layer, tolerating features with broken geometry.
-
-    pyogrio 0.13 defaults to `on_invalid="raise"`, so ONE malformed polygon
-    anywhere in a settlement-extent layer aborts the whole run with
-
-        GEOSException: Invalid number of points in LinearRing found 2
-
-    naming neither the file nor the feature. Earlier versions only warned,
-    which is why a layer that works on one machine can fail on another. Reading
-    with `on_invalid="warn"` turns those features into nulls, which
-    `_drop_bad_geometry` then removes and reports.
-    """
     path = str(path)
     if path.endswith(".parquet"):
-        return _drop_bad_geometry(gpd.read_parquet(path), path)
-
-    kwargs = {}
+        return gpd.read_parquet(path)
     if path.endswith(".sqlite"):
         # spatialite files may hold several tables; pick the data layer
         import pyogrio
@@ -521,14 +458,8 @@ def read_spatial(path: str | Path) -> gpd.GeoDataFrame:
         names = [l[0] for l in layers]
         skip = {"data_licenses", "sql_statements_log", "elementarygeometries", "knn2"}
         data_layers = [n for n in names if n.lower() not in skip]
-        kwargs["layer"] = data_layers[0] if data_layers else names[0]
-
-    try:
-        gdf = gpd.read_file(path, on_invalid="warn", **kwargs)
-    except TypeError:
-        # older geopandas/fiona engine has no on_invalid; it warns by default
-        gdf = gpd.read_file(path, **kwargs)
-    return _drop_bad_geometry(gdf, path)
+        return gpd.read_file(path, layer=data_layers[0] if data_layers else names[0])
+    return gpd.read_file(path)
 
 
 def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,

@@ -62,6 +62,15 @@ def _norm_place(series: pd.Series) -> pd.Series:
             .str.replace(r"\s+", " ", regex=True).str.strip().str.title())
 
 
+def _find_state_col(columns) -> str | None:
+    """A state column in the track export, if it carries one."""
+    for col in columns:
+        low = str(col).lower()
+        if "state" in low and "code" not in low and "id" not in low:
+            return col
+    return None
+
+
 def scope_from_visitation(visitation) -> dict:
     """The state scope to filter tracks by, taken from the day's visitation CSV.
 
@@ -88,23 +97,12 @@ def scope_from_visitation(visitation) -> dict:
 
     states = (set(_norm_place(dip[state_col]).dropna()) - {"", "Nan", "None"}
               if state_col else set())
-    # team code -> LGA. Some GTS exports carry no LGA column at all (only Team
-    # Code), so the per-LGA breakdown has to be reconstructed from the
-    # settlement list. It is also the fallback that lets state scoping work on
-    # such an export, via the team-code route.
-    lga_by_team = {}
-    if team_col and lga_col:
-        pair = dip[[team_col, lga_col]].dropna()
-        lga_by_team = dict(zip(pair[team_col].astype(str).str.strip(),
-                               _norm_place(pair[lga_col])))
-
     return {
         "state": next(iter(states)) if len(states) == 1 else None,
         "lgas": (frozenset(_norm_place(dip[lga_col]).dropna()) - {"", "Nan", "None"}
                  if lga_col else frozenset()),
         "teams": (frozenset(dip[team_col].dropna().astype(str).str.strip())
                   - {""} if team_col else frozenset()),
-        "lga_by_team": lga_by_team,
     }
 
 # Gaps longer than this are treated as "not tracking" and excluded from the
@@ -172,18 +170,9 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
     want_lgas = scope.get("lgas") or frozenset()
     want_teams = scope.get("teams") or frozenset()
 
-    from track_columns import (parse_timestamps, read_columns, require,
-                               resolve as resolve_cols)
-
-    # Resolved by meaning, not by exact name — see track_columns. The export's
-    # LGA field carries a boundary year and changes with each release.
-    header = read_columns(tracks_file)
-    cols = resolve_cols(header)
-    require(cols, ("team", "ts"), header, "Daily time spent")
-    ts_col, team_col, lga_col = cols["ts"], cols["team"], cols["lga"]
-
-    keep = {c for c in (ts_col, team_col, lga_col) if c}
-    state_col = cols["state"] if want_state else None
+    keep = {TS_COL, TEAM_COL, LGA_COL}
+    header = pd.read_csv(tracks_file, nrows=0)
+    state_col = _find_state_col(header.columns) if want_state else None
     if state_col:
         keep.add(state_col)
 
@@ -201,26 +190,30 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
     seen = kept = 0
     for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in keep,
                              chunksize=chunksize, dtype=str):
-        chunk = chunk.dropna(subset=[team_col])
+        if TS_COL not in chunk.columns or TEAM_COL not in chunk.columns:
+            raise ValueError(
+                f"Track export needs '{TS_COL}' and '{TEAM_COL}' to measure "
+                f"daily tracking time; it has {list(chunk.columns)}")
+        chunk = chunk.dropna(subset=[TEAM_COL])
         seen += len(chunk)
 
         if state_col and state_col in chunk.columns:
             chunk = chunk[_norm_place(chunk[state_col]) == want_state]
-        elif want_lgas and lga_col and lga_col in chunk.columns:
-            chunk = chunk[_norm_place(chunk[lga_col]).isin(want_lgas)]
+        elif want_lgas and LGA_COL in chunk.columns:
+            chunk = chunk[_norm_place(chunk[LGA_COL]).isin(want_lgas)]
         elif want_teams:
-            chunk = chunk[chunk[team_col].astype(str).str.strip().isin(want_teams)]
+            chunk = chunk[chunk[TEAM_COL].astype(str).str.strip().isin(want_teams)]
         kept += len(chunk)
         if not len(chunk):
             continue
 
-        ts = parse_timestamps(chunk[ts_col])
+        ts = pd.to_datetime(chunk[TS_COL], format=TS_FORMAT, errors="coerce")
         local = ts + LOCAL_OFFSET
         part = pd.DataFrame({
             "date": local.dt.strftime("%Y-%m-%d"),
-            "team_code": chunk[team_col].astype(str).str.strip(),
-            "lga": (chunk[lga_col].astype(str).str.strip()
-                    if lga_col and lga_col in chunk.columns else ""),
+            "team_code": chunk[TEAM_COL].astype(str).str.strip(),
+            "lga": (chunk[LGA_COL].astype(str).str.strip()
+                    if LGA_COL in chunk.columns else ""),
             "_ts": local,
         })
         parts.append(part.dropna(subset=["_ts"]))
@@ -238,14 +231,6 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
 
     allp = pd.concat(parts, ignore_index=True)
     allp = allp[allp["team_code"] != ""]
-
-    # No LGA column in the export: recover it from the settlement list so the
-    # per-LGA follow-up table on the slide is not a single blank row.
-    lga_by_team = scope.get("lga_by_team") or {}
-    if lga_by_team and not allp["lga"].astype(str).str.strip().any():
-        allp["lga"] = allp["team_code"].map(lga_by_team).fillna("")
-        print(f"  LGA recovered from the settlement list for "
-              f"{int((allp['lga'] != '').sum()):,} of {len(allp):,} ping rows")
 
     grouped = allp.groupby(["date", "team_code"], dropna=False)
     out = grouped.agg(Pings=("_ts", "size"),
