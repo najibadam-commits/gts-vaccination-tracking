@@ -143,19 +143,38 @@ def enrich_track_file(path: str, output_dir: str | None = None) -> str:
     return out
 
 
-def has_usable_lga(path: str) -> bool:
+def needs_admin_enrichment(path: str) -> bool:
+    """Return True when State, LGA or Ward labels are absent/incomplete."""
     try:
         cols = resolve(read_columns(path))
-        lga = cols.get("lga")
-        if not lga:
-            return False
+        targets = [cols.get("state"), cols.get("lga"), cols.get("ward")]
+        if any(not c for c in targets):
+            return True
         ext = Path(path).suffix.lower()
         if ext == ".csv":
-            sample = pd.read_csv(path, usecols=[lga], nrows=5000, dtype=str)
+            sample = pd.read_csv(path, usecols=targets, nrows=5000, dtype=str)
         elif ext == ".parquet":
-            sample = pd.read_parquet(path, columns=[lga])
+            sample = pd.read_parquet(path, columns=targets)
         else:
-            sample = gpd.read_file(path, columns=[lga])
+            sample = gpd.read_file(path, columns=targets)
+        for col in targets:
+            values = sample[col].fillna("").astype(str).str.strip().str.lower()
+            if bool(values.isin({"", "nan", "none", "null"}).any()):
+                return True
+        return False
+    except Exception:
+        return True
+
+
+def has_usable_lga(path: str) -> bool:
+    """Compatibility helper for callers that only need to test LGA."""
+    try:
+        cols = resolve(read_columns(path)); lga = cols.get("lga")
+        if not lga: return False
+        ext = Path(path).suffix.lower()
+        if ext == ".csv": sample = pd.read_csv(path, usecols=[lga], nrows=5000, dtype=str)
+        elif ext == ".parquet": sample = pd.read_parquet(path, columns=[lga])
+        else: sample = gpd.read_file(path, columns=[lga])
         values = sample[lga].fillna("").astype(str).str.strip().str.lower()
         return bool((~values.isin({"", "nan", "none", "null"})).any())
     except Exception:
