@@ -145,6 +145,20 @@ def merge_tracks(input_folder: str, output_folder: str | None = None,
             gj.close()
             print(f"Saved {gj_path}")
     print(f"Saved {out_csv} ({total:,} points)")
+
+    # Integrated NGA administrative enrichment. Existing non-empty labels are
+    # preserved; missing State/LGA/Ward values are spatially derived. If the
+    # boundary layer is unavailable, the clean merged CSV remains usable and
+    # Stage 3 can fall back to team-code/LGA matching.
+    try:
+        from enrich_tracks_nga import enrich_track_file, has_usable_lga
+        if not has_usable_lga(out_csv):
+            enriched = enrich_track_file(out_csv, output_folder)
+            print(f"Administrative enrichment complete: {enriched}")
+            return enriched
+        print("Existing LGA field detected; NGA enrichment skipped.")
+    except Exception as exc:
+        print(f"Administrative enrichment skipped ({exc}); using merged track CSV.")
     return out_csv
 
 
