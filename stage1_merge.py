@@ -13,7 +13,7 @@ import glob
 import os
 import sys
 
-from track_columns import read_columns, resolve
+from track_columns import read_columns, resolve, validate_resolved, parse_timestamps
 
 CANONICAL = {"team": "Team Code", "ts": "GPS Timestamp (UTC)", "lat": "Lat", "lon": "Lon"}
 
@@ -43,39 +43,51 @@ def _parse_coordinate(value: str, lower: float, upper: float) -> float | None:
 
 def merge_tracks(input_folder: str, output_folder: str | None = None,
                  file_pattern: str = "Tracks_*.csv", write_geojson: bool = False) -> str:
-    """Stream compatible CSV track exports into one merged CSV.
-
-    Different files may use different Team/timestamp/latitude/longitude
-    headers. The union of source attributes is retained and canonical aliases
-    ``Team Code``, ``GPS Timestamp (UTC)``, ``Lat`` and ``Lon`` are appended
-    when needed.
-    """
+    """Stream compatible CSV track exports into one merged CSV."""
     output_folder = output_folder or input_folder
     os.makedirs(output_folder, exist_ok=True)
     csv_files = sorted(glob.glob(os.path.join(input_folder, file_pattern)))
     if not csv_files:
-        sys.exit(f"No files matching {file_pattern} in {input_folder}")
+        supported = ("*.csv", "*.txt", "*.parquet", "*.gpkg", "*.geojson", "*.shp")
+        csv_files = sorted({p for pat in supported for p in glob.glob(os.path.join(input_folder, pat))})
+    if not csv_files:
+        sys.exit(f"No track files found in {input_folder}")
 
     file_meta = []
     union_headers: list[str] = []
     seen = set()
+    diagnostics = []
     for csv_file in csv_files:
-        header = _read_header(csv_file)
+        try:
+            header = _read_header(csv_file)
+        except Exception as exc:
+            diagnostics.append(f"{os.path.basename(csv_file)}: header read failed: {exc}")
+            continue
         if not header:
+            diagnostics.append(f"{os.path.basename(csv_file)}: empty/no header")
             continue
         cols = resolve(header)
-        if not cols.get("team") or not cols.get("ts"):
-            print(f"  WARNING: {os.path.basename(csv_file)} has no recognised Team Code/Team ID or timestamp column; file skipped")
+        try:
+            valid, check = validate_resolved(csv_file, cols)
+        except Exception as exc:
+            valid, check = False, {"reason": str(exc)}
+        if not valid:
+            diagnostics.append(
+                f"{os.path.basename(csv_file)}: team={cols.get('team')!r}, ts={cols.get('ts')!r}; "
+                f"team_ok={check.get('team_ok')}, timestamp_ok={check.get('timestamp_ok')}, "
+                f"parsed_timestamps={check.get('timestamp_values_parsed', 0)}; {check.get('reason','')}"
+            )
             continue
         for h in header:
             if h not in seen:
-                seen.add(h)
-                union_headers.append(h)
+                seen.add(h); union_headers.append(h)
         team_idx = header.index(cols["team"]) if cols.get("team") in header else None
         file_meta.append((csv_file, header, cols, team_idx))
+        print(f"  OK: {os.path.basename(csv_file)} | team={cols.get('team')} | ts={cols.get('ts')}")
 
     if not file_meta:
-        raise ValueError("No input track file contains a usable team and timestamp field")
+        detail = "\n".join(f"    - {d}" for d in diagnostics) or "    - No readable track files."
+        raise ValueError("No input track file contains a usable team and timestamp field.\nSchema diagnostics:\n" + detail)
 
     output_headers = list(union_headers)
     for canonical in CANONICAL.values():
@@ -123,15 +135,19 @@ def merge_tracks(input_folder: str, output_folder: str | None = None,
                     for key, canonical in CANONICAL.items():
                         source_col = cols.get(key)
                         value = record.get(source_col, "") if source_col else ""
+                        if key == "ts" and value:
+                            parsed_ts = parse_timestamps(__import__("pandas").Series([value])).iloc[0]
+                            if __import__("pandas").notna(parsed_ts):
+                                value = parsed_ts.strftime("%Y-%m-%d %H:%M:%S")
                         if not record.get(canonical):
                             record[canonical] = value
-                    src = os.path.basename(csv_file)
-                    record["source_file"] = src
+                    record["source_file"] = os.path.basename(csv_file)
                     writer.writerow(record)
                     kept += 1
                     total += 1
                     if gj is not None and lat and lon:
                         try:
+                            import json
                             lat_f, lon_f = float(lat), float(lon)
                             props = {k: v for k, v in record.items() if k not in {"Lat", "Lon"}}
                             feat = {"type": "Feature", "properties": props, "geometry": {"type": "Point", "coordinates": [lon_f, lat_f]}}
@@ -146,9 +162,6 @@ def merge_tracks(input_folder: str, output_folder: str | None = None,
             print(f"Saved {gj_path}")
     print(f"Saved {out_csv} ({total:,} points)")
 
-    # Integrated NGA administrative enrichment. Existing non-empty labels are
-    # preserved; missing State/LGA/Ward values are spatially derived. If the
-    # boundary layer is unavailable, the clean merged CSV remains usable.
     try:
         from enrich_tracks_nga import enrich_track_file, needs_admin_enrichment
         if needs_admin_enrichment(out_csv):
