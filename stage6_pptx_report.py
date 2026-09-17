@@ -1,35 +1,41 @@
 """Stage 6 — Daily Tracking Report in the organization's PPTX template.
 
-Populates the eHealth Africa "GTS Tracking Report" deck (Google-Slides
-export) with this campaign day's numbers, charts and maps. Slide numbers
-below are the FINAL output deck's order (what you'd count opening the
-generated .pptx) — not the same as the SLIDE_* constants further down,
-which name the source slideN.xml files in the original template and don't
-shift when slides are inserted/removed/merged at build time:
-  slide 1  title (state, day, date)
-  slide 2  background (LGA/ward/team/settlement counts + implementation map)
-  slide 3  team deployed / reported (+ deployment bar)
-  slide 4  time spent analysis (+ time-spent bar) — the template has no
-           dedicated slide for this, so one is created at build time by
-           duplicating the Team Deployment slide's layout (title +
-           narrative + one chart) and inserting it right after slide 3
-  slide 5  state DAILY coverage — today's planned subset only (donut + LGA bar)
-  slide 6  cumulative coverage — donut + LGA breakdown bar, side by side
-           (merged from the template's separate "cumulative settlements
-           coverage" and "cumulative coverage by LGA" slides; laid out with
-           the same two-chart, side-by-side design as the daily coverage
-           slide, reusing that slide's own picture boxes so the two stay
-           visually consistent)
-  slide 7  [removed — day-over-day settlement table not auto-filled yet]
-  slide 8  statewide coverage map
-  slide 9+ one slide per implementing LGA, coverage map
-  challenges / photos slides — left as editable placeholders
+Populates the eHealth Africa "GTS Tracking Report" deck with this campaign
+day's numbers, charts and maps.
+
+The template is `eHA_Revised_reporting_template.pptx` — the deck the team
+approved — and this module now follows it exactly rather than reshaping it.
+Every slide below already exists in that template, in this order, so the
+build fills slides instead of fabricating them:
+
+  slide 1   title (state, day, date)
+  slide 2   background (LGA/ward/team/settlement counts + implementation map)
+  slide 3   team deployed / reported (+ deployment bar)
+  slide 4   time spent analysis (chart left, under-12-minutes LGA table right,
+            with tracking sessions per team folded into both the narration and
+            the table's third column)
+  slide 5   team time efficiency (full-width quadrant scatter)
+  slide 6   state DAILY coverage — today's planned subset only (donut + LGA bar)
+  slide 7   state CUMULATIVE coverage — Day 1..today (donut + LGA bar)
+  slide 8   cumulative settlements coverage (depth-of-coverage chart)
+  slide 9   target population coverage analysis (estimate donuts + LGA bar)
+  slide 10  statewide coverage map
+  slide 11+ one slide per implementing LGA, coverage map
+  challenges / photo slides — left as editable placeholders
   thank-you slide — unchanged
 
-Requires the template's slide layout to match the one this module was
-built against (see gts_pipeline/README.md). If the org updates the
-template, re-run the slide-inspection steps described there before
-changing the constants below.
+Slides 5 and 9 are the only conditional ones: both are DELETED when their
+metric cannot be computed from the inputs (no grid-cell columns, no
+population estimates), never re-created. Nothing else is inserted, removed
+or merged at build time.
+
+An earlier version of this module was written against the superseded
+24-slide "organization's reporting template.pptx", which had no slides for
+time spent, efficiency or target population — it cloned the Team Deployment
+slide to manufacture them. That is gone. If the org revises the template
+again, re-run `python inspect_template_title.py <template.pptx>` and
+re-verify the SLIDE_* constants below BEFORE the next campaign; they are
+positional and a re-order silently writes content onto the wrong slides.
 """
 import argparse
 import copy
@@ -63,22 +69,41 @@ SLIDE_W_IN, SLIDE_H_IN = 10.0, 5.625
 # ------------------------------------------------------------- template map
 # Slide numbers as they appear in the template's ppt/slides/slideN.xml
 # (verified to match presentation order 1:1 for this specific template).
+# These are the slide numbers of eHA_Revised_reporting_template.pptx (28
+# slides), which is the deck the team approved. They are NOT the numbers of
+# the superseded "organization's reporting template.pptx" (24 slides), whose
+# order differs from slide 4 down — under the old numbers this module wrote
+# the daily-coverage content onto Time Spent Analysis, the cumulative donut
+# onto Team Time Efficiency, and the statewide map onto Cumulative
+# Settlements Coverage. If you swap templates again, re-verify these first.
+# The Tracking Sessions slide is the one exception to the positional rule: it
+# exists in the v2 template and not in the original, so it is located by TITLE
+# and everything after it shifts by one when present. A title this module and
+# `add_sessions_slide_to_template.py` both take from one constant is safe to
+# match on in a way that data-dependent narration wording is not — the template
+# author sets it, not the campaign.
+from add_sessions_slide_to_template import (DEVICE_LGA_SLIDE_TITLE,
+                                            SESSIONS_SLIDE_TITLE,
+                                            TEAM_LGA_SLIDE_TITLE)
+
 SLIDE_TITLE = "slide1.xml"
 SLIDE_BACKGROUND = "slide2.xml"
 SLIDE_DEPLOY = "slide3.xml"
-SLIDE_DAILY_COVERAGE = "slide4.xml"
-SLIDE_CUMULATIVE_DONUT = "slide5.xml"
-SLIDE_CUMULATIVE_LGA = "slide6.xml"        # removed — its chart merges onto SLIDE_CUMULATIVE_DONUT
-SLIDE_DAY_COMPARE_TABLE = "slide7.xml"     # removed — not auto-filled
-SLIDE_STATE_MAP = "slide8.xml"
-SLIDE_LGA_MAP_TEMPLATE = "slide9.xml"       # kept as LGA slide #1, duplicated for the rest
-SLIDE_LGA_MAP_ORIGINALS_TO_DROP = [f"slide{n}.xml" for n in range(10, 22)]  # 10..21
+SLIDE_TIME_SPENT = "slide4.xml"
+SLIDE_EFFICIENCY = "slide5.xml"             # dropped when the metric can't be computed
+SLIDE_DAILY_COVERAGE = "slide6.xml"
+SLIDE_CUMULATIVE_COVERAGE = "slide7.xml"
+SLIDE_CUMULATIVE_SETTLEMENTS = "slide8.xml"
+SLIDE_TARGET_POPULATION = "slide9.xml"      # dropped when the estimates are absent
+SLIDE_STATE_MAP = "slide10.xml"
+SLIDE_LGA_MAP_TEMPLATE = "slide11.xml"      # kept as LGA slide #1, duplicated for the rest
+SLIDE_LGA_MAP_ORIGINALS_TO_DROP = [f"slide{n}.xml" for n in range(12, 25)]  # 12..24
 
-# Slides inside the drop range above that must survive regardless. The range was
-# written on the assumption that slides 10-21 are all hand-made LGA map slides,
-# but the template also carries a Challenges slide in there, which the blanket
-# delete was removing. Matching on slide text rather than a slide number keeps
-# this working if the template is re-ordered.
+# Slides inside the drop range above that must survive regardless. The range
+# assumes slides 12-24 are all hand-made LGA map slides; in the earlier
+# template a Challenges slide sat inside the equivalent range and the blanket
+# delete was removing it. Matching on slide text rather than a slide number
+# keeps this working if the template is re-ordered.
 PRESERVE_SLIDE_KEYWORDS = ("challenge",)
 
 # A generous, consistent map box (EMU) reused for the statewide map and every
@@ -154,9 +179,20 @@ TIME_CHART_BOX = (_in(0.20), _in(CONTENT_TOP_IN), _in(5.45), _in(3.22))
 TIME_TABLE_BOX = (_in(5.78), _in(CONTENT_TOP_IN), _in(4.02), _in(2.30))
 TIME_TABLE_MAX_ROWS = 9
 TIME_TABLE_COL_WIDTHS = (2.42, 1.60)          # LGA, Teams <12 min
+# With the tracking-sessions column. The LGA column gives up the width rather
+# than the two numeric columns, whose headers are the longer strings — squeezing
+# those wraps the header and doubles the header row's height.
+TIME_TABLE_COL_WIDTHS_3 = (1.86, 1.20, 0.96)  # LGA, <12 min, Median sessions
+# With the LGA's own team count as well. The LGA column keeps the width it
+# needs for "Birnin Magaji/Kiyaw"; the three numeric columns are sized to their
+# headers, which are longer than any value they will hold.
+TIME_TABLE_COL_WIDTHS_4 = (1.58, 0.78, 0.80, 0.86)  # LGA, Teams, <12 min, Median sessions
 TIME_TABLE_ROW_HEIGHT = _in(0.17)
 TIME_TABLE_FONT_PT = 8
 TIME_TABLE_CAPTION = "Top LGAs by teams spending under 12 minutes in the field."
+TIME_TABLE_CAPTION_WITH_SESSIONS = ("Top LGAs by teams spending under 12 minutes "
+                                    "in the field, with the median number of "
+                                    "separate tracking sessions per team.")
 
 # PowerPoint and LibreOffice both treat a row's height as a MINIMUM and grow it
 # to fit the text plus the cell's own margins, so the requested height above is
@@ -168,6 +204,50 @@ TABLE_RENDERED_ROW_IN = 0.185
 TIME_TABLE_CELL_MARGIN_V = Emu(9144)    # 0.01in top/bottom
 TIME_TABLE_CELL_MARGIN_H = Emu(45720)   # 0.05in left/right
 TABLE_CAPTION_PT = 8
+
+# Tracking Sessions by Team & Device: two tables sharing the content band.
+# Equal halves with a 0.30in gutter, so neither reads as the primary one — the
+# team view and the device view answer the same question from opposite ends.
+SESSION_TEAM_BOX = (_in(0.20), _in(CONTENT_TOP_IN), _in(4.72), _in(2.60))
+SESSION_DEVICE_BOX = (_in(5.08), _in(CONTENT_TOP_IN), _in(4.72), _in(2.60))
+# Team Code and IMEI are the long strings; the two counts need only enough
+# width for their headers, which are longer than any value they will hold.
+SESSION_TEAM_COL_WIDTHS = (1.72, 1.60, 0.70, 0.70)    # Team Code, IMEI, Tracks, Pings
+SESSION_DEVICE_COL_WIDTHS = (1.90, 0.84, 0.94, 1.04)  # IMEI, Teams, Tracks, Pings
+# Deliberately below what the box could fit. These are ranked lists whose point
+# is the top of the ranking; a fuller table shrinks the type without making the
+# slide more useful, and the complete lists are in the workbook.
+SESSION_TABLE_MAX_ROWS = 11
+SESSION_TABLE_FONT_PT = 8
+SESSION_TEAM_CAPTION = ("Teams by number of tracks, those on more than one "
+                        "device first. Full list: workbook tab "
+                        "'Session Data (Team)'.")
+SESSION_DEVICE_CAPTION = ("Devices by number of team codes carried, then "
+                          "tracks. Full list: workbook tab "
+                          "'Session Data (Device)'.")
+# An IMEI is 16 hex characters and a team on three devices produces a 50-
+# character cell, which wraps to three lines and blows the row height out. The
+# first is shown in full — it is what identifies the handset to go and look at
+# — and the rest are counted.
+SESSION_IMEI_MAX_LISTED = 1
+
+# Cumulative Settlements Coverage: one centred chart, starting at the shared
+# content top. The template's own picture box begins at 1.75in, inside the
+# narration band, so the two overlapped on every build.
+CUMSETT_CHART_BOX = (_in(2.19), _in(CONTENT_TOP_IN), _in(5.61), _in(3.20))
+
+# Tracks per LGA (the IMEI and Team Code slides). One centred table — a state
+# has 14-27 LGAs, which is a tall narrow list, so it takes the middle of the
+# slide rather than half of it. Height runs to the footer band.
+LGA_TABLE_BOX = (_in(2.35), _in(CONTENT_TOP_IN), _in(5.30), _in(3.05))
+LGA_TABLE_COL_WIDTHS = (2.30, 1.00, 1.00, 1.00)   # LGA, Teams/Devices, Tracks, Pings
+# A state has at most 27 LGAs; 16 rows keeps 8pt type legible and the overflow
+# row names the rest. The workbook tab carries every LGA.
+LGA_TABLE_MAX_ROWS = 16
+LGA_TABLE_FONT_PT = 8
+# Quoted in the caption so the slide defines its own terms. Imported rather
+# than restated, so it cannot drift from the rule the analysis actually used.
+from team_sessions import SESSION_GAP_MINUTES as SESSION_GAP_FOR_CAPTION
 
 # Target Population & Household Coverage. Panels sit in the content band; the
 # narration above them is fitted to the band, so it can no longer reach them.
@@ -184,15 +264,30 @@ TARGET_BOXES_2 = [
     (_in(4.90), _in(CONTENT_TOP_IN), _in(4.70), _in(3.22)),
 ]
 
-# Team Time Efficiency: the quadrant scatter, full width, and nothing else.
+# Team Time Efficiency: the two-panel distribution/worst-teams chart, full
+# width, and nothing else.
 #
-# The flagged-team table that used to sit to its right has been removed. It was
-# the element that kept colliding with the narration, and the same teams are
-# already named in the chart's own label gutter and listed in full in the
-# workbook's "Teams Flagged (Time x Cov)" tab — so the slide loses no
-# information by dropping it, and the chart gains the whole width, which is
-# what makes those team codes legible at presentation size.
+# No separate flagged-team table on the slide — the worst-performing teams are
+# already named directly on the chart's own right-hand panel, and every
+# flagged team, with its full reason, is listed in the workbook's
+# "Flagged Teams" tab and the flagged-teams CSV. The slide loses no
+# information by not repeating the roster, and the chart gets the whole
+# width, which is what keeps team codes legible at presentation size.
 EFF_SLIDE_TITLE = "Team Time Efficiency"
+# Used only when the chart exists but its figures could not be recomputed for
+# this run's narration. States the agreed methodology — the same two rules the
+# chart's own quadrants and legend are built on — rather than quoting numbers
+# that were not measured. Leaving the template's own narration would show the
+# previous campaign's figures under this campaign's chart, which is worse than
+# saying less.
+EFF_METHOD_NARRATION = (
+    "Team Time Efficiency measures each team's actual GPS start and end time "
+    "against the fixed 08:00-16:00 operational window. A team is flagged for "
+    "a late start, an early stop, insufficient operational time, excessive "
+    "idle time, or a missing or invalid timestamp. Per-team figures and every "
+    "flag reason for this run are in the workbook's Team Time Efficiency tab "
+    "and the flagged-teams CSV."
+)
 # This slide's narration carries two findings (unproductive field time, and
 # stationary teams), so it runs longer than the others and needs a deeper band.
 EFF_CONTENT_TOP_IN = 2.05
@@ -246,6 +341,128 @@ def _slide_text(unpacked_dir: str, slide_filename: str) -> str:
     except OSError:
         return ""
     return " ".join(re.findall(r"<a:t>(.*?)</a:t>", xml, re.S))
+
+
+def _find_slide_file_by_title(unpacked_dir: str, title: str) -> str | None:
+    """The slideN.xml whose text contains `title`, or None.
+
+    Used for the Tracking Sessions slide only, which exists in the v2 template
+    and not in the original. Everything else in this module is addressed by
+    slide NUMBER; this one cannot be, because its number depends on which
+    template the analyst is running with. Matching on a title that this
+    codebase writes into the template (see SESSIONS_SLIDE_TITLE) is stable in a
+    way that matching on campaign-dependent narration wording is not.
+
+    The XML is searched with the ampersand escaped, since "Team & Device" is
+    stored as "Team &amp; Device" and a raw comparison finds nothing.
+    """
+    slides_dir = os.path.join(unpacked_dir, "ppt", "slides")
+    if not os.path.isdir(slides_dir):
+        return None
+    wanted = title.replace("&", "&amp;")
+    names = sorted((f for f in os.listdir(slides_dir) if f.endswith(".xml")),
+                   key=lambda n: int(re.sub(r"\D", "", n) or 0))
+    for name in names:
+        text = _slide_text(unpacked_dir, name)
+        if title in text or wanted in text:
+            return name
+    return None
+
+
+# Role -> the title text that identifies that slide in the template. Matched on
+# the start of the slide's first text, case-insensitively, because most titles
+# carry a campaign day ("State Daily Coverage - Day 2") that changes every run.
+SLIDE_TITLE_PATTERNS = {
+    "background": "background",
+    "deploy": "team deployed",
+    "time_spent": "time spent analysis",
+    "efficiency": "team time efficiency",
+    "daily_coverage": "state daily coverage",
+    "cumulative_coverage": "state cumulative coverage",
+    "cumulative_settlements": "cumulative settlements coverage",
+    "target_population": "target population coverage",
+    "state_map": "state coverage map",
+}
+# The LGA map slides are identified by the tail of their title, since the head
+# is the LGA's own name.
+LGA_MAP_TITLE_MARKERS = ("lga visitation status", "lga coverage map")
+
+
+def _resolve_slide_map(unpacked_dir: str) -> dict:
+    """Role -> slideN.xml, resolved by TITLE rather than by file number.
+
+    Why this exists
+    ---------------
+    The SLIDE_* constants name slide part files, and part files are not stable.
+    python-pptx RENUMBERS every slide part when it saves, so the moment a slide
+    is inserted into the template and the file is written back, the numbering is
+    renormalised to presentation order and every constant after the insertion
+    point silently addresses a different slide. Adding three slides to the
+    approved deck moved `slide11.xml` from "first LGA map" to "Cumulative
+    Settlements Coverage" — so the build wrote the statewide map's title onto
+    the cumulative slide, and reduced the LGA maps by dropping the target and
+    map slides instead.
+
+    That is the same failure that made this module fill the wrong slides
+    against the superseded template, and it will recur every time the template
+    is edited. Resolving by title removes the class: the titles are written by
+    `add_sessions_slide_to_template.py` and by the template's own authors, and
+    they do not move when a part is renumbered.
+
+    Anything not found falls back to its positional constant, so a template
+    with an unexpected title still builds — with a warning, rather than in
+    silence.
+    """
+    slides_dir = os.path.join(unpacked_dir, "ppt", "slides")
+    names = sorted((f for f in os.listdir(slides_dir) if f.endswith(".xml")),
+                   key=lambda n: int(re.sub(r"\D", "", n) or 0))
+    texts = {n: _slide_text(unpacked_dir, n) for n in names}
+
+    def head(name):
+        return " ".join(texts[name].split())[:120].lower()
+
+    resolved, used = {}, set()
+    for role, pattern in SLIDE_TITLE_PATTERNS.items():
+        hit = next((n for n in names
+                    if n not in used and head(n).startswith(pattern)), None)
+        if hit:
+            resolved[role] = hit
+            used.add(hit)
+
+    for role, title in (("sessions", SESSIONS_SLIDE_TITLE),
+                        ("device_lga", DEVICE_LGA_SLIDE_TITLE),
+                        ("team_lga", TEAM_LGA_SLIDE_TITLE)):
+        hit = _find_slide_file_by_title(unpacked_dir, title)
+        if hit and hit not in used:
+            resolved[role] = hit
+            used.add(hit)
+
+    lga_maps = [n for n in names if n not in used
+                and any(m in head(n) for m in LGA_MAP_TITLE_MARKERS)]
+    resolved["lga_map_template"] = lga_maps[0] if lga_maps else None
+    resolved["lga_map_extras"] = lga_maps[1:]
+
+    fallbacks = {
+        "background": SLIDE_BACKGROUND, "deploy": SLIDE_DEPLOY,
+        "time_spent": SLIDE_TIME_SPENT, "efficiency": SLIDE_EFFICIENCY,
+        "daily_coverage": SLIDE_DAILY_COVERAGE,
+        "cumulative_coverage": SLIDE_CUMULATIVE_COVERAGE,
+        "cumulative_settlements": SLIDE_CUMULATIVE_SETTLEMENTS,
+        "target_population": SLIDE_TARGET_POPULATION,
+        "state_map": SLIDE_STATE_MAP,
+    }
+    for role, fallback in fallbacks.items():
+        if role not in resolved:
+            print(f"  WARNING: no slide titled like '{SLIDE_TITLE_PATTERNS[role]}' "
+                  f"in this template — falling back to {fallback}, which may be "
+                  f"the wrong slide. Check the template's slide titles.")
+            resolved[role] = fallback
+    if resolved["lga_map_template"] is None:
+        print(f"  WARNING: no LGA map slide found by title — falling back to "
+              f"{SLIDE_LGA_MAP_TEMPLATE}")
+        resolved["lga_map_template"] = SLIDE_LGA_MAP_TEMPLATE
+        resolved["lga_map_extras"] = SLIDE_LGA_MAP_ORIGINALS_TO_DROP
+    return resolved
 
 
 def _set_run_text(paragraph, index, text):
@@ -304,7 +521,7 @@ def _rebuild_narrative(text_frame, segments, font_pt: float | None = None):
 
 
 def _find_narration(slide):
-    """The narration text box on a slide cloned from the Team Deployment layout.
+    """The narration text box on one of this report's content slides.
 
     Resolved by ROLE, with the sample template's wording only as a first
     preference. Every one of these slides used to be found by searching for the
@@ -325,7 +542,7 @@ def _find_narration(slide):
         pass
 
     candidates = [sh for sh in slide.shapes
-                  if sh.has_text_frame and sh is not title
+                  if sh.has_text_frame and not _same_shape(sh, title)
                   and sh.text_frame.text.strip()]
     for sh in candidates:
         if "were deployed" in sh.text_frame.text.lower():
@@ -710,7 +927,7 @@ def _overlap_report(prs, skip_slides=(1, 2)) -> list[str]:
         title_shape = slide.shapes.title
         boxes = []
         for sh in slide.shapes:
-            if title_shape is not None and sh is title_shape:
+            if _same_shape(sh, title_shape):
                 continue
             try:
                 l, t, w, h = int(sh.left), int(sh.top), int(sh.width), int(sh.height)
@@ -756,8 +973,126 @@ def _pictures_by_x(slide):
                   key=lambda s: s.left)
 
 
+def _same_shape(a, b) -> bool:
+    """Do two shape objects refer to the same shape?
+
+    python-pptx builds a FRESH wrapper on every access, so `slide.shapes.title`
+    called twice returns two objects, and a shape yielded by iterating
+    `slide.shapes` is never the same object as the title even when it is the
+    title. Every `is`/`is not` comparison between shapes is therefore always
+    True, silently — which let the title placeholder be treated as a narration
+    candidate here, and (in the template-authoring script) be overwritten with
+    the narration text. The underlying lxml element IS stable, so compare that.
+    """
+    if a is None or b is None:
+        return False
+    return a._element is b._element
+
+
+def _fill_lga_track_slide(slide, title, table, meta, unit, unit_col,
+                          unit_total, lga_sum):
+    """One LGA-keyed track table, filled onto a slide of the template's own.
+
+    Shared by the IMEI and Team Code slides: they differ only in which
+    identifier the rows are deduplicated on, so the layout, the narration
+    structure and the reconciliation note are written once.
+    """
+    _set_title(slide, title)
+    _clear_stale_content(slide, below_in=CONTENT_TOP_IN - 0.10, drop_pictures=True)
+
+    narr = _find_narration(slide)
+    if narr is not None:
+        segments = [
+            (f"{unit_total:,} unique {_plural(unit, unit_total)}", True),
+            (" transmitted ", False),
+            (f"{meta['total_tracks']:,} {_plural('track', meta['total_tracks'])}", True),
+            (" from ", False),
+            (f"{meta['total_pings']:,} valid GPS points", True),
+            (f" across {meta['n_lgas']} LGAs in {meta['state']}", False),
+            (f" on {meta['date']}." if meta.get("date") else ".", False),
+        ]
+        if lga_sum and lga_sum != unit_total:
+            segments += [
+                (" The LGA column sums to ", False), (f"{lga_sum:,}", True),
+                (f" because {meta['multi_lga_teams']:,} teams worked in more "
+                 "than one LGA and are counted in each.", False),
+            ]
+        _narration(narr, segments)
+
+    shape = _add_dataframe_table(
+        slide, table[["LGA", unit_col, "Tracks", "Pings"]], LGA_TABLE_BOX,
+        max_rows=LGA_TABLE_MAX_ROWS, font_size=LGA_TABLE_FONT_PT,
+        row_height=TIME_TABLE_ROW_HEIGHT, overflow_label="more LGAs",
+        col_widths=LGA_TABLE_COL_WIDTHS,
+        cell_margins=(TIME_TABLE_CELL_MARGIN_V, TIME_TABLE_CELL_MARGIN_H))
+    caption = (f"A track is one continuous run of GPS points; a break of more "
+               f"than {SESSION_GAP_FOR_CAPTION:g} minutes starts a new one. "
+               f"{unit_col} counts distinct "
+               f"{'IMEIs' if unit == 'device' else 'team codes'}, so repeated "
+               f"submissions from one {unit} are counted once. LGA is the one "
+               f"the GPS points fall inside, not the export's label.")
+    _table_caption(slide, shape, LGA_TABLE_BOX, caption)
+
+
+def _shorten_imei_column(df):
+    """Trim the IMEI cell so a multi-device team does not wrap the row.
+
+    Only the display is trimmed. The full comma-separated list stays in the
+    workbook's `Session Data (Team)` tab, which the slide's caption names —
+    the slide identifies the handset, the workbook enumerates them.
+    """
+    if df is None or "IMEI" not in df.columns:
+        return df
+    def short(value):
+        parts = [p for p in str(value).split(", ") if p]
+        if len(parts) <= SESSION_IMEI_MAX_LISTED:
+            return ", ".join(parts)
+        head = ", ".join(parts[:SESSION_IMEI_MAX_LISTED])
+        return f"{head} +{len(parts) - SESSION_IMEI_MAX_LISTED}"
+    out = df.copy()
+    out["IMEI"] = out["IMEI"].apply(short)
+    return out
+
+
+def _plural(word: str, n) -> str:
+    """`word` or `word`s. Slide text reads worse with "session(s)" than it does
+    with the extra branch here, and these figures are read aloud."""
+    return word if int(n) == 1 else word + "s"
+
+
 def _delete_shape(shape):
     shape._element.getparent().remove(shape._element)
+
+
+def _clear_stale_content(slide, below_in: float, drop_pictures: bool = False):
+    """Remove tables and loose text boxes sitting in a slide's content band.
+
+    The revised template is an export of a previous run, so its slides carry
+    that run's tables and captions as ordinary shapes. This module adds its own
+    versions at fixed coordinates, which would land on top of them. Pictures are
+    deliberately NOT touched — they are replaced in place, which is what keeps
+    each chart in the box the template positioned it in.
+
+    Anything above `below_in` is left alone: that band holds the title and the
+    narration, both of which are rewritten rather than re-created.
+    """
+    cutoff = _in(below_in)
+    for sh in list(slide.shapes):
+        # Pictures are swept at ANY height when asked, not just below the
+        # content band. A slide cloned to carry tables inherits its source's
+        # chart, and that chart sits in the band ABOVE the cutoff — so a
+        # position-based sweep left it in place, overlapping every table added
+        # underneath it. On a template slide that owns its picture this is
+        # never called with drop_pictures, and the picture is replaced in place.
+        if drop_pictures and sh.shape_type == 13:
+            _delete_shape(sh)
+            continue
+        if sh.top is None or sh.top < cutoff:
+            continue
+        if getattr(sh, "has_table", False):
+            _delete_shape(sh)
+        elif sh.shape_type != 13 and sh.has_text_frame:
+            _delete_shape(sh)
 
 
 def _set_single_placeholder_bullet(shape, text):
@@ -882,11 +1217,19 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
                       charts_folder: str, output_file: str,
                       campaign_name: str = "Vaccination Tracking Report",
                       state_logo_path: str | None = None,
-                      tracks_file: str | None = None) -> str:
+                      tracks_file: str | None = None,
+                      track_date: str | None = None) -> str:
     """`tracks_file` is the merged track export. The Time Spent Analysis slide
     is measured from it directly (per team, per tracking date, from the
     timestamps); without it that slide's figures and table are omitted rather
-    than filled from a different measure."""
+    than filled from a different measure.
+
+    `track_date` selects THE DAY, as "YYYY-MM-DD". The analysis is
+    day-specific, never cumulative: whatever day is chosen, tracks from every
+    other day are excluded before anything is counted. Default "latest"
+    resolves to the most recent date that has tracks inside the state of
+    interest — not the export's last date, which on a national file may belong
+    to a different state's campaign entirely."""
     dip = pd.read_csv(visitation_csv, low_memory=False)
     lga_col = find_col(dip, "lga")
     daily_col = f"day_{day}_daily"
@@ -929,6 +1272,77 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
             "no_tracks": int(no_tracks_row.iloc[0]["Number of Teams"]) if len(no_tracks_row) else 0,
         }
 
+    # ---------------------------------------------- spatial attribution
+    # Computed ONCE, and every per-team figure on the deck is scoped by it.
+    #
+    # This replaces scoping by name: `scope_from_visitation` matched the
+    # export's state/LGA labels or team codes against the settlement list's,
+    # and the team-code route matches nothing at all (`GOR-025` in the
+    # settlement list against `ZAM/BUG/BEL/003` in the export — 0 of 3,067
+    # overlap). Where the labels happened to agree the old scope was right; the
+    # point is that when they did not, it failed silently and the deck reported
+    # a national figure as a state one.
+    #
+    # The resulting team-code set is passed to team_daily_time and
+    # team_sessions as their scope, so all three analyses describe exactly the
+    # same population and no extra pass over the export is needed for them.
+    from team_daily_time import scope_from_visitation as _scope_from_vis
+
+    geo = None
+    spatial_scope = None
+    if tracks_file and os.path.exists(tracks_file):
+        try:
+            from track_geo import analyse as analyse_geo, reported_team_codes
+            here = os.path.dirname(os.path.abspath(__file__))
+
+            def _boundary(name):
+                for folder in (here, os.path.dirname(here), os.getcwd()):
+                    cand = os.path.join(folder, name)
+                    if os.path.exists(cand):
+                        return cand
+                return None
+
+            # The state of interest comes from the PLANNED SETTLEMENTS, not
+            # from the caller's argument and not from the export's own labels.
+            # `state` is kept as the fallback so a settlement list without a
+            # state column still runs.
+            from track_geo import load_boundaries, state_of_interest
+            _states, _ = load_boundaries(_boundary("state.sqlite"), None)
+            try:
+                soi = state_of_interest(dip, _states)
+                if soi.lower() != str(state).strip().lower():
+                    print(f"  state of interest from the planned settlements "
+                          f"is '{soi}' (the run was labelled '{state}') — "
+                          f"using the settlement list's")
+            except Exception as exc:
+                soi = state
+                print(f"  state of interest could not be derived from the "
+                      f"settlement list ({exc}) — using '{state}'")
+
+            geo = analyse_geo(tracks_file, soi, _boundary("state.sqlite"),
+                              _boundary("LGA.sqlite"),
+                              report_date=track_date or "latest")
+            if geo["meta"]["total_teams"]:
+                spatial_scope = {"teams": frozenset(reported_team_codes(geo)),
+                                 "state": state}
+            else:
+                print("  WARNING: no track fell inside the state boundary — "
+                      "check the state name against the boundary layer")
+                geo = None
+        except Exception as exc:
+            print(f"  spatial attribution unavailable ({exc}) — per-team "
+                  f"figures fall back to name matching")
+
+    # team code -> the LGA holding most of its pings. Every per-LGA figure on
+    # the Time Spent slide is grouped through this one mapping, so the under-12
+    # column, the session column and the team count cannot come from three
+    # different spellings of the same place.
+    team_to_lga = {}
+    if geo is not None and len(geo["pings"]):
+        team_to_lga = (geo["pings"][geo["pings"]["lga"] != ""]
+                       .groupby("team_code")["lga"]
+                       .agg(lambda s: s.value_counts().idxmax()).to_dict())
+
     # Daily time spent tracking — the ONLY measure on the Time Spent slide.
     # Measured from the track timestamps, per team, for one tracking date, so
     # the population is the teams that actually transmitted. Both the chart and
@@ -938,27 +1352,113 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
     under_12_table = None
     if tracks_file and os.path.exists(tracks_file):
         try:
-            from team_daily_time import (analyse as analyse_daily_time,
-                                         scope_from_visitation, UNDER_12)
-            # `dip` is stage 2's output and already covers only this campaign's
-            # state, so it defines the scope. GTS exports are national; without
-            # this the slide would count every state's teams.
-            dts = analyse_daily_time(tracks_file, "latest",
-                                     scope=scope_from_visitation(dip))
-            daily_time_stats = dts["meta"]
-            by_lga = dts.get("by_lga")
-            if by_lga is not None and len(by_lga) and UNDER_12 in by_lga.columns:
-                u12 = (by_lga[["LGA", UNDER_12]]
-                       .rename(columns={UNDER_12: "Teams <12 min"}))
+            from team_daily_time import UNDER_12
+
+            if geo is not None:
+                # THE HIERARCHY, in order: selected day -> track -> state
+                # boundary overlay -> state of interest -> unique team -> time
+                # spent. `geo` has already applied the first four, and its
+                # time_spent applies the last two to those pings and nothing
+                # else, so out-of-state field time cannot enter a team's
+                # minutes. Handing a team-code scope to team_daily_time gave
+                # the right population but still measured each team from every
+                # ping it sent that day, wherever it sent it.
+                gts = geo["time_spent"]
+                gm = geo["meta"]
+                dts = {"per_team": gts["per_team"].rename(
+                           columns={"lga": "lga"}),
+                       "distribution": gts["distribution"]}
+                daily_time_stats = {
+                    "date": gm["date"],
+                    "total_teams": gts["meta"]["total"],
+                    "median_minutes": gts["meta"]["median_minutes"],
+                    "teams_under_12": gts["meta"]["under_12"],
+                    "under_12_pct": gts["meta"]["under_12_pct"],
+                    "max_gap_minutes": gts["meta"]["max_gap_minutes"],
+                    "state": gm["state"],
+                    "state_scoped": True,
+                    "dates_in_export": gm.get("dates_available_in_state", []),
+                }
+            else:
+                from team_daily_time import analyse as analyse_daily_time
+                print("  WARNING: no spatial attribution — time spent falls "
+                      "back to name-based state scoping, which is not the "
+                      "agreed methodology")
+                dts = analyse_daily_time(tracks_file, track_date or "latest",
+                                         scope=_scope_from_vis(dip))
+                daily_time_stats = dts["meta"]
+
+            # The under-12 table is grouped by the team's SPATIAL LGA, not by
+            # the export's own LGA label. The two spell the same place
+            # differently — the export says "Birnin Magaji-Kiyaw", the boundary
+            # layer says "Birnin Magaji/Kiyaw" — so a table built from one and
+            # a column merged from the other silently loses that row. Grouping
+            # both from the same source removes the mismatch instead of
+            # normalising the strings and hoping the spellings stay close.
+            per_team_time = dts.get("per_team")
+            if team_to_lga and per_team_time is not None and len(per_team_time) \
+                    and "team_code" in per_team_time.columns:
+                work = per_team_time.copy()
+                work["LGA"] = work["team_code"].map(team_to_lga)
+                work = work[work["LGA"].notna()]
+                u12 = (work[work["Time Spent Range"] == UNDER_12]
+                       .groupby("LGA")["team_code"].nunique()
+                       .reset_index(name="Teams <12 min"))
                 u12 = u12[u12["Teams <12 min"] > 0].sort_values(
                     "Teams <12 min", ascending=False).reset_index(drop=True)
                 if len(u12):
                     under_12_table = u12
+            else:
+                by_lga = dts.get("by_lga")
+                if by_lga is not None and len(by_lga) and UNDER_12 in by_lga.columns:
+                    u12 = (by_lga[["LGA", UNDER_12]]
+                           .rename(columns={UNDER_12: "Teams <12 min"}))
+                    u12 = u12[u12["Teams <12 min"] > 0].sort_values(
+                        "Teams <12 min", ascending=False).reset_index(drop=True)
+                    if len(u12):
+                        under_12_table = u12
         except Exception as exc:
             print(f"  daily time-spent detail unavailable for the slide ({exc})")
     else:
         print("  daily time-spent detail unavailable — no merged track export "
               "was passed to stage 6")
+
+    # Tracking sessions — how many separate sittings the day's tracking arrived
+    # in, per team and per device. Shares the Time Spent slide rather than
+    # taking one of its own: it answers "in how many pieces?" about exactly the
+    # measure that slide already reports, and the approved template has no
+    # slide for it. Same track export, same state scope, same gap rule as the
+    # minutes above, so the two can never describe different populations.
+    session_stats: dict = {}
+    session_by_lga = None
+    session_team_table = None
+    session_device_table = None
+    if tracks_file and os.path.exists(tracks_file):
+        try:
+            from team_sessions import analyse as analyse_sessions
+            sess = analyse_sessions(tracks_file, daily_time_stats.get("date") or "latest",
+                                    scope=spatial_scope or _scope_from_vis(dip))
+            session_stats = sess["meta"]
+            # Median sessions per LGA, grouped by the SPATIAL LGA for the same
+            # reason the under-12 column is — team_sessions' own by_lga uses
+            # the export's spelling, which does not match the boundary layer's.
+            sess_per_team = sess.get("per_team")
+            if team_to_lga and sess_per_team is not None and len(sess_per_team):
+                w = sess_per_team.copy()
+                w["LGA"] = w["team_code"].map(team_to_lga)
+                w = w[w["LGA"].notna()]
+                if len(w):
+                    session_by_lga = (w.groupby("LGA")["Sessions"].median()
+                                      .round(0).astype(int)
+                                      .reset_index(name="Median Sessions"))
+            elif len(sess["by_lga"]):
+                session_by_lga = sess["by_lga"]
+            if len(sess["team_table"]):
+                session_team_table = sess["team_table"]
+            if len(sess["device_table"]):
+                session_device_table = sess["device_table"]
+        except Exception as exc:
+            print(f"  tracking sessions unavailable for the slide ({exc})")
 
     # Estimated <5 target population and household coverage. The charts are
     # produced by stage 4; this only needs the figures for the narrative, and
@@ -976,17 +1476,21 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
     except Exception as exc:
         print(f"  target population coverage unavailable for the slide ({exc})")
 
-    # Team Time Efficiency — field minutes against grid-weighted coverage.
-    # Optional like the rest: an older visitation CSV without the grid-cell
-    # columns costs this slide, not the deck.
+    # Team Time Efficiency — actual clock start/end against the 08:00-16:00
+    # operational window. Needs the raw track export (start/end times don't
+    # exist in the settlement-level visitation CSV); without one, this slide is
+    # dropped rather than the whole deck.
     eff = None
-    try:
-        from team_efficiency import analyse as analyse_team_efficiency
-        eff = analyse_team_efficiency(visitation_csv, "cumulative")
-        if not len(eff["per_team"]):
-            eff = None
-    except Exception as exc:
-        print(f"  team efficiency unavailable for the slide ({exc})")
+    if tracks_file and os.path.exists(tracks_file):
+        try:
+            from team_efficiency import analyse as analyse_team_efficiency
+            from team_daily_time import scope_from_visitation
+            eff = analyse_team_efficiency(tracks_file, dip, report_date=track_date or "latest",
+                                          scope=scope_from_visitation(dip))
+            if not len(eff["per_team"]):
+                eff = None
+        except Exception as exc:
+            print(f"  team efficiency unavailable for the slide ({exc})")
 
     # DAILY charts for slide 5. Both read the day-only columns stage 2 writes,
     # so nothing on that slide carries a previous day's work. The stacked bar
@@ -1008,13 +1512,157 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
     safe_extract(template_path, unpacked)
 
     # ------------------------------------------------- structural edits
-    delete_slide(unpacked, SLIDE_DAY_COMPARE_TABLE)
-    # cumulative-by-LGA is no longer its own slide — its chart moves onto
-    # the cumulative-coverage slide (SLIDE_CUMULATIVE_DONUT) alongside the
-    # donut, side by side, matching the daily-coverage slide's layout
-    delete_slide(unpacked, SLIDE_CUMULATIVE_LGA)
+    #
+    # The template already contains every slide this report needs, in the
+    # right order, so there is nothing to insert. The only structural work is
+    # (a) dropping the conditional slides when their metric cannot be computed,
+    # and (b) reducing the template's hand-made LGA map slides to one, then
+    # duplicating it once per LGA actually implementing today.
+    #
+    # Every slide is addressed through `smap`, which resolves roles by TITLE.
+    # Part-file numbers are not stable across a template edit — see
+    # `_resolve_slide_map` — so the SLIDE_* constants are fallbacks now, not the
+    # primary route.
+    smap = _resolve_slide_map(unpacked)
+
+    # Team Time Efficiency is kept whenever there is something to show — the
+    # recomputed figures OR the chart stage 4 already rendered.
+    #
+    # This slide used to be deleted purely on `eff is None`, and `eff` is a
+    # SECOND, independent computation: stage 4 calls
+    # `team_efficiency.analyse(visitation_csv, "cumulative")` to draw
+    # team_efficiency.png, and stage 6 calls it again for the narration. So a
+    # settlement CSV that satisfied stage 4 but not stage 6 — or any transient
+    # failure in the recompute — silently removed a slide whose chart was
+    # sitting finished in the charts folder. Basing the decision on the
+    # deliverable rather than on the recomputation means the analysis can no
+    # longer be lost after it has already succeeded.
+    # Notes the caller can put in front of the analyst. Everything this module
+    # decides is explained on stdout, which Streamlit does not surface in the
+    # browser — so a slide could be dropped for a clearly stated reason that
+    # the person running the app had no way of reading.
+    notes = build_pptx_report.notes = []
+
+    eff_png_path = os.path.join(charts_folder, "team_efficiency.png")
+    eff_chart_exists = os.path.exists(eff_png_path)
+    keep_efficiency = eff is not None or eff_chart_exists
+
+    # Does the template actually HAVE the slide? The superseded 24-slide deck
+    # does not, and `_resolve_slide_map` falls back to a positional constant
+    # when a title is missing — which would have deleted whatever happened to
+    # sit at that position. Resolved explicitly here instead.
+    eff_slide_file = _find_slide_file_by_title(unpacked, EFF_SLIDE_TITLE)
+
+    if eff_slide_file is None and keep_efficiency:
+        # Create it. Preferring the template's own slide is the rule; when the
+        # template has none, a deck WITHOUT the analysis is worse than one with
+        # a slide cloned from Team Deployment — same master, same fonts, same
+        # branding. `add_sessions_slide_to_template.py` makes this permanent.
+        try:
+            eff_slide_file = duplicate_slide(unpacked, smap["deploy"],
+                                             after=smap["deploy"])
+            print(f"  this template has no '{EFF_SLIDE_TITLE}' slide — one was "
+                  f"created from the Team Deployment layout. Run "
+                  f"add_sessions_slide_to_template.py to add it permanently.")
+        except Exception as exc:
+            print(f"  could not create a Team Time Efficiency slide ({exc})")
+            keep_efficiency = False
+    elif eff_slide_file is not None and not keep_efficiency:
+        delete_slide(unpacked, eff_slide_file)
+        # Name the missing INPUT, not the symptom. Team Time Efficiency now
+        # needs the raw track export (clock start/end times, not a settlement-
+        # level column), so a missing/unreadable track file is the only way
+        # this slide can be dropped.
+        detail = ("no merged track export was given" if not tracks_file
+                  else f"the track export at {tracks_file} could not be read"
+                  if not os.path.exists(tracks_file)
+                  else "the analysis could not be computed from it")
+        notes.append(
+            f"Team Time Efficiency was left out of the deck: {detail}, and no "
+            f"team_efficiency.png was found in the charts folder. Re-run "
+            f"the pipeline with the merged track export available so this "
+            f"slide's figures can be computed.")
+        print(f"  team efficiency unavailable and no team_efficiency.png — "
+              f"slide dropped ({detail})")
+    elif keep_efficiency and eff is None:
+        print("  WARNING: team efficiency figures could not be recomputed, but "
+              "team_efficiency.png exists — the slide is KEPT with the chart "
+              "and a methodology narration instead of this run's numbers.")
+
+    print(f"  Team Time Efficiency: figures={'yes' if eff is not None else 'no'}, "
+          f"chart={'yes' if eff_chart_exists else 'no'}, "
+          f"slide={'included' if keep_efficiency else 'DROPPED'}")
+    if keep_efficiency and eff is None:
+        notes.append("Team Time Efficiency shows this run's chart, but its "
+                     "figures could not be recomputed — the slide states the "
+                     "methodology rather than quoting numbers.")
+    if target_cov is None:
+        delete_slide(unpacked, smap["target_population"])
+        print("  target estimates unavailable — Target Population slide dropped")
+
+    # Tracking Sessions: present in the v2 template, absent from the original.
+    # Three outcomes, and the deck is correct in all three — an analyst running
+    # last month's template must not get a broken deck because the pipeline
+    # gained a slide.
+    # The slide each new one is inserted after, so the block comes out in
+    # order. Starts at the efficiency slide and advances as slides are added.
+    # Must be a slide that SURVIVES. When the efficiency slide is dropped its
+    # part file still exists on disk but is no longer in the presentation's
+    # slide list, so inserting "after" it fails and every slide that would have
+    # followed is silently lost.
+    _anchor = [eff_slide_file if keep_efficiency else smap["time_spent"]]
+
+    def _optional_slide(title, have_data, label):
+        """Ensure a slide exists for this analysis, and return 1 if it does.
+
+        Three cases, and the deck is right in all of them:
+
+          template has it + data      -> keep it
+          template has it + no data   -> delete it
+          template lacks it + data    -> CREATE it
+
+        That last case is the point. These analyses are produced by the
+        pipeline whether or not the template has caught up, and a report that
+        silently omits them because a .pptx is a version behind is not a
+        report anyone can use. The new slide is cloned from an existing one, so
+        it inherits the deck's master, fonts, background and branding rather
+        than introducing a look of its own.
+        """
+        found = smap.get({SESSIONS_SLIDE_TITLE: "sessions",
+                          DEVICE_LGA_SLIDE_TITLE: "device_lga",
+                          TEAM_LGA_SLIDE_TITLE: "team_lga"}[title])
+        if found is not None:
+            if not have_data:
+                delete_slide(unpacked, found)
+                print(f"  no data for '{title}' — slide dropped")
+                return 0
+            _anchor[0] = found
+            return 1
+        if not have_data:
+            return 0
+        try:
+            created = duplicate_slide(unpacked, _anchor[0], after=_anchor[0])
+            _anchor[0] = created
+            print(f"  '{title}' is not in this template — slide created from "
+                  f"the deck's own layout so {label} still reaches the report")
+            return 1
+        except Exception as exc:
+            print(f"  could not create a '{title}' slide ({exc}) — {label} "
+                  f"omitted from the deck (still in the workbook)")
+            return 0
+
+    have_geo_lga = bool(geo is not None and len(geo["by_lga_team"]))
+    sess_present = _optional_slide(SESSIONS_SLIDE_TITLE,
+                                   session_team_table is not None, "session tables")
+    dev_lga_present = _optional_slide(DEVICE_LGA_SLIDE_TITLE, have_geo_lga,
+                                      "per-LGA device table")
+    team_lga_present = _optional_slide(TEAM_LGA_SLIDE_TITLE, have_geo_lga,
+                                       "per-LGA team table")
+    # Everything below the block of new slides shifts by however many survived.
+    sess_offset = sess_present + dev_lga_present + team_lga_present
+
     preserved_slides = []
-    for s in SLIDE_LGA_MAP_ORIGINALS_TO_DROP:
+    for s in smap["lga_map_extras"]:
         text = _slide_text(unpacked, s).lower()
         if any(kw in text for kw in PRESERVE_SLIDE_KEYWORDS):
             preserved_slides.append(s)
@@ -1022,40 +1670,17 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
             continue
         delete_slide(unpacked, s)
 
-    # Time Spent Analysis has no dedicated slide in the template — duplicate
-    # the Team Deployment slide (title + narrative + one chart, the same
-    # layout we need) and insert the copy right after it
-    _time_spent_slide_name = duplicate_slide(unpacked, SLIDE_DEPLOY, after=SLIDE_DEPLOY)
+    # Index offsets used by the content-edit section below. They express which
+    # of the two conditional slides survived, so the fixed slide order can be
+    # read off directly rather than recomputed per slide.
+    eff_offset = 1 if keep_efficiency else 0
+    map_offset = 1 if target_cov is not None else 0
 
-    # Cumulative Settlements Coverage likewise has no slide of its own —
-    # another copy of the Team Deployment layout, inserted after the coverage
-    # slides so it reads as their summary. This pushes the statewide map and
-    # every LGA map slide down one index (see the content-edit section).
-    cumulative_slide = duplicate_slide(unpacked, SLIDE_DEPLOY, after=SLIDE_CUMULATIVE_DONUT)
-
-    # Target Population & Household Coverage — a new slide, again cloned from
-    # the Team Deployment layout so it inherits the template's title style,
-    # background and branding rather than introducing a new look. It sits after
-    # the cumulative-coverage summary and before the maps, so the deck reads:
-    # settlements covered -> what that means in children and households -> where.
-    # Created only when the settlement list actually carries the estimates;
-    # when it does, everything from the statewide map onward shifts down one
-    # more index.
-    # Team Time Efficiency follows Time Spent Analysis — same subject, finer
-    # question — so the deployment / time / efficiency trio reads in order.
-    efficiency_slide = None
-    if eff is not None:
-        efficiency_slide = duplicate_slide(unpacked, SLIDE_DEPLOY,
-                                           after=_time_spent_slide_name)
-
-    target_slide = None
-    if target_cov is not None:
-        target_slide = duplicate_slide(unpacked, SLIDE_DEPLOY, after=cumulative_slide)
-
-    lga_slide_files = [SLIDE_LGA_MAP_TEMPLATE]
-    prev = SLIDE_LGA_MAP_TEMPLATE
+    lga_template = smap["lga_map_template"]
+    lga_slide_files = [lga_template]
+    prev = lga_template
     for _ in range(len(lga_pngs) - 1):
-        prev = duplicate_slide(unpacked, SLIDE_LGA_MAP_TEMPLATE, after=prev)
+        prev = duplicate_slide(unpacked, lga_template, after=prev)
         lga_slide_files.append(prev)
 
     clean_unused_slides(unpacked)
@@ -1084,7 +1709,7 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
               "what slide 1 actually contains.")
 
     for sh in s.shapes:
-        if not sh.has_text_frame or sh is title_shape:
+        if not sh.has_text_frame or _same_shape(sh, title_shape):
             continue
         t = sh.text_frame.text
         if re.match(r"^Day\s+\d+$", t.strip()):
@@ -1133,14 +1758,22 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
                 (" reporting, ", False), (f"{deploy_stats['pending']:,} ", True),
                 ("still pending at the time of this report.", False),
             ], content_top_in=1.75)
-    for sh in s.shapes:
+    # list(...) is load-bearing, not tidiness. `_replace_picture` removes the
+    # old picture and APPENDS the new one to the same shape tree, so a live
+    # iterator walks straight into its own output and replaces it again,
+    # forever. It happens to terminate when the picture is the last shape on
+    # the slide, which is why this survived until a slide had something after
+    # it — then stage 6 ran for 67,000 iterations instead of raising.
+    for sh in list(s.shapes):
         if sh.shape_type == 13:
             dep_chart = os.path.join(charts_folder, "team_deployment.png")
             if os.path.exists(dep_chart):
                 _replace_picture(s, sh, dep_chart)
 
-    # slide 4 — Time Spent Analysis (duplicated from the Team Deployment slide
-    # above, so it arrives as title + narrative + one full-width chart).
+    # slide 4 — Time Spent Analysis. A native slide in the revised template,
+    # which means it arrives carrying the LAST run's table and caption baked in
+    # as real shapes. Those are cleared below before this run's are added —
+    # without that the deck would show two tables stacked on each other.
     #
     # ONE measure only: for each team, how long it was actually tracking on the
     # reporting date, read from the track timestamps (`team_daily_time`). The
@@ -1150,6 +1783,7 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
     # and the LGA table on the right now come from the same rows.
     s = slides[3]
     _set_title(s, f"Time Spent Analysis - Day {day}")
+    _clear_stale_content(s, below_in=CONTENT_TOP_IN - 0.10)
 
     time_chart = os.path.join(charts_folder, "daily_time_spent.png")
     has_time_chart = os.path.exists(time_chart)
@@ -1175,69 +1809,149 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
                 ("No team tracking time could be measured for this reporting "
                  "date — check that the track export covers it.", False),
             ]
+        # Sessions: the same day's tracking, counted in sittings rather than
+        # minutes. Two clauses at most — the band is fixed and the narration is
+        # shrunk to fit it, so a third would cost legibility on every slide.
+        if session_stats.get("total_teams"):
+            sm = session_stats
+            n_sess = int(round(sm["median_sessions"]))
+            segments += [
+                (" Tracking came in a median of ", False),
+                (f"{n_sess} {_plural('session', n_sess)} ", True),
+                ("per team; ", False),
+                (f"{sm['fragmented_teams']:,} ({sm['fragmented_pct']:.1%})", True),
+                (f" in {sm['fragmented_threshold']} or more — a tracker "
+                 "repeatedly stopped or losing its fix.", False),
+            ]
+            # The device-sharing count is deliberately NOT here. The narration
+            # band is fixed at 0.75in and the type is shrunk to fit it, so every
+            # clause added costs legibility on the whole slide: at campaign
+            # scale this sentence alone drops the narration from 10pt to 9.5,
+            # against a 9pt floor. It goes under the table instead, where it
+            # has room and sits beside the per-LGA detail it qualifies.
         _narration(narr, segments)
 
     for sh in list(s.shapes):
         if sh.shape_type == 13:
-            # the cloned layout's single chart placeholder becomes the left-hand
-            # chart; the table is added beside it below
+            # the template's chart box becomes the left-hand chart; this
+            # run's table is added beside it below
             if has_time_chart:
                 _replace_picture(s, sh, time_chart, box=TIME_CHART_BOX)
             else:
                 _delete_shape(sh)
 
-    if has_time_chart and under_12_table is not None and len(under_12_table):
+    # The follow-up table is built PER LGA, and every column is that LGA's own
+    # figure — not a state total repeated down the rows.
+    #
+    #   LGA            named on every row, so the narration below the table can
+    #                  be traced to a row rather than to the state
+    #   Teams          teams that transmitted from inside that LGA's boundary
+    #   <12 min        of those, how many tracked for under twelve minutes
+    #   Sessions       median separate tracking sessions per team, in that LGA
+    #
+    # Teams comes from the SPATIAL attribution, so an LGA's team count is the
+    # teams whose GPS points fall inside it. The under-12 and session columns
+    # come from the same day's tracks. Ordered by the under-12 count, because
+    # that is the follow-up list the slide exists to produce.
+    time_table = under_12_table
+    table_caption = TIME_TABLE_CAPTION
+    col_widths = TIME_TABLE_COL_WIDTHS
+    if time_table is not None and len(time_table):
+        merged = time_table.copy()
+        if geo is not None and len(geo["by_lga_team"]):
+            merged = merged.merge(
+                geo["by_lga_team"][["LGA", "Teams"]], on="LGA", how="left")
+        if session_by_lga is not None and "Median Sessions" in session_by_lga:
+            merged = merged.merge(
+                session_by_lga[["LGA", "Median Sessions"]], on="LGA", how="left")
+
+        cols = ["LGA"]
+        if "Teams" in merged:
+            # An LGA in the under-12 list with no spatial team count means the
+            # two sources disagree about that LGA. Shown as "—" rather than 0,
+            # because 0 would assert something the data does not say.
+            merged["Teams"] = merged["Teams"].apply(
+                lambda v: "—" if pd.isna(v) else f"{int(v):,}")
+            cols.append("Teams")
+        cols.append("Teams <12 min")
+        if "Median Sessions" in merged:
+            merged["Median Sessions"] = merged["Median Sessions"].apply(
+                lambda v: "—" if pd.isna(v) else f"{int(v)}")
+            merged = merged.rename(columns={"Median Sessions": "Median sessions"})
+            cols.append("Median sessions")
+
+        merged = merged.rename(columns={"Teams <12 min": "<12 min"})
+        cols = ["<12 min" if c == "Teams <12 min" else c for c in cols]
+        time_table = merged[cols]
+        if len(cols) == 4:
+            table_caption = TIME_TABLE_CAPTION_WITH_SESSIONS
+            col_widths = TIME_TABLE_COL_WIDTHS_4
+        elif len(cols) == 3:
+            table_caption = TIME_TABLE_CAPTION_WITH_SESSIONS
+            col_widths = TIME_TABLE_COL_WIDTHS_3
+        shared = session_stats.get("shared_devices") or 0
+        if shared:
+            table_caption += (f" {shared:,} {_plural('device', shared)} "
+                              f"transmitted under more than one team code.")
+
+    if has_time_chart and time_table is not None and len(time_table):
         table_shape = _add_dataframe_table(
-            s, under_12_table, TIME_TABLE_BOX, max_rows=TIME_TABLE_MAX_ROWS,
+            s, time_table, TIME_TABLE_BOX, max_rows=TIME_TABLE_MAX_ROWS,
             font_size=TIME_TABLE_FONT_PT, row_height=TIME_TABLE_ROW_HEIGHT,
-            overflow_label="more LGAs", col_widths=TIME_TABLE_COL_WIDTHS,
+            overflow_label="more LGAs", col_widths=col_widths,
             cell_margins=(TIME_TABLE_CELL_MARGIN_V, TIME_TABLE_CELL_MARGIN_H))
-        _table_caption(s, table_shape, TIME_TABLE_BOX, TIME_TABLE_CAPTION)
+        _table_caption(s, table_shape, TIME_TABLE_BOX, table_caption)
     elif has_time_chart:
         _placeholder_note(
             s, TIME_TABLE_BOX,
             "No team tracked for under 12 minutes on this date.")
 
-    # slide 5 (when present) — TEAM TIME EFFICIENCY. Sits directly after Time
-    # Spent Analysis: same subject, finer question. Everything from the daily
-    # coverage slide onward shifts down one index when it is created.
-    eff_offset = 0
-    if efficiency_slide is not None:
-        eff_offset = 1
+    # slide 5 (when kept) — TEAM TIME EFFICIENCY. Sits directly after Time
+    # Spent Analysis: same subject, finer question. Native slide in the
+    # template, dropped upstream only when there is neither a recomputed figure
+    # nor a rendered chart, so everything below shifts up one index when absent.
+    if keep_efficiency:
         s = slides[4]
         _set_title(s, EFF_SLIDE_TITLE)
-        m = eff["meta"]
-        eff_png = os.path.join(charts_folder, "team_efficiency.png")
+        m = eff["meta"] if eff is not None else {}
+        eff_png = eff_png_path
         # The narration is the analytical finding, not a description of the
-        # scatter. Two clauses at most: how many teams put in the hours without
-        # the coverage to show for it, and — the sharper finding — how many
-        # reported working while their tracks never left one place.
-        segments = [
+        # chart: how many teams cleared the 08:00-16:00 window and how many
+        # didn't, and — the sharper follow-up — which reasons are driving that.
+        # With no recomputed figures, the slide states the METHOD rather than
+        # inventing numbers or leaving the template's last run showing. The
+        # chart below it is this run's, so the slide is still true.
+        segments = [(EFF_METHOD_NARRATION, False)] if eff is None else [
             (f"{m['flagged_teams']:,} of {m['total_teams']:,} teams "
              f"({m['flagged_pct']:.1%})", True),
-            (" logged more than 2 hours in the field while covering less than "
-             "50% of their assigned grid. This indicates substantial time "
-             "spent on the ground without a corresponding level of coverage.",
-             False),
+            (f" were flagged against the {m['window']} operational window — "
+             f"average Team Time Efficiency across all teams was "
+             f"{m['avg_efficiency_pct']:.1f}%.", False),
         ]
-        if m.get("stationary_only"):
-            # "A further" means ADDITIONAL to the teams already counted above.
-            # `stationary_teams` includes those that are also over 2 hours with
-            # low coverage, so quoting it here would count them twice.
-            segments += [
-                (" A further ", False),
-                (f"{m['stationary_only']:,} teams "
-                 f"({m['stationary_only_pct']:.1%})", True),
-                (" reported working but moved through no more than one grid "
-                 "cell, with a median of ", False),
-                (f"{m['stationary_median_hours']:.1f} hours", True),
-                (" of recorded tracks from effectively one location. These "
-                 "teams should be ", False),
-                ("flagged for supervisory verification", True), (".", False),
-            ]
-        else:
-            segments += [(" No team's tracks showed it stationary in one "
-                          "location for the day.", False)]
+        reason_counts = (m or {}).get("reason_counts") or {}
+        if eff is not None and reason_counts:
+            # Worst reason first — the one a supervisor should act on first.
+            top = sorted(reason_counts.items(), key=lambda kv: kv[1], reverse=True)
+            lead_reason, lead_n = top[0]
+            segments += [(" The leading reason was ", False),
+                        (f"{lead_reason.lower()} ({lead_n:,} teams)", True)]
+            # Capped at two secondary reasons, same spirit as `_join_codes`
+            # capping a long team-code list — up to seven reasons can apply,
+            # and naming all of them turns the sentence into a run-on. The
+            # rest are still in the workbook and the flagged-teams CSV.
+            MAX_SECONDARY_REASONS = 2
+            others = top[1:]
+            if others:
+                shown = ", ".join(f"{r.lower()} ({n:,})"
+                                  for r, n in others[:MAX_SECONDARY_REASONS])
+                extra = len(others) - MAX_SECONDARY_REASONS
+                tail = f", and {extra} other reason{'s' if extra != 1 else ''}" \
+                    if extra > 0 else ""
+                segments += [(f", followed by {shown}{tail}.", False)]
+            else:
+                segments += [(".", False)]
+        elif eff is not None:
+            segments += [(" No team was flagged for this reporting date.", False)]
 
         # Narration first, then the content placed BELOW where it actually
         # ended. A fixed content top only works while the narration fits the
@@ -1263,36 +1977,149 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
                          _in(EFF_CHART_WIDTH_IN),
                          _in(max(1.2, CONTENT_BOTTOM_IN - eff_top)))
 
+        # The FIRST picture becomes the chart; any others are removed. This
+        # slide carries exactly one chart, so replacing every picture with it
+        # stacked two copies in the same box — which is what happened on a
+        # template whose Team Deployment layout holds more than one picture and
+        # was therefore cloned with both.
+        placed = False
         for sh in list(s.shapes):
-            if sh.shape_type == 13:
-                if os.path.exists(eff_png):
-                    _replace_picture(s, sh, eff_png, box=eff_chart_box)
-                else:
-                    _delete_shape(sh)
+            if sh.shape_type != 13:
+                continue
+            if os.path.exists(eff_png) and not placed:
+                _replace_picture(s, sh, eff_png, box=eff_chart_box)
+                placed = True
+            else:
+                _delete_shape(sh)
+        if os.path.exists(eff_png) and not placed:
+            _fit_picture(s, eff_png, eff_chart_box)
 
-    # slide 6 — STATE DAILY COVERAGE: this reporting day only, no prior days
-    s = slides[4 + eff_offset]
-    for sh in list(s.shapes):
-        if sh.has_text_frame:
-            txt = sh.text_frame.text
-            if txt.strip().startswith("State Daily Coverage"):
-                _set_title(s, f"State Daily Coverage - Day {day}")
-            elif "settlements planned for" in txt or ("of the" in txt and "planned for" in txt):
-                _narration(sh, [
-                    (f"{day_visited:,}", True), (" of the ", False),
-                    (f"{day_planned:,} ", True),
-                    ("geo-coded settlements scheduled for ", False),
-                    (f"Day {day} ", True), ("were visited ", False),
-                    (f"({day_pct:.1f}%)", True),
-                    (", from this day's tracks alone across ", False),
-                    (f"{n_lga} LGAs", True), (".", False),
-                    ("" if day_is_true_daily else
-                     " Daily status unavailable — figures shown are cumulative.", False),
-                ], content_top_in=COVERAGE_TOP_IN)
-            elif re.match(r"^[\d,]+\s*\([\d.]+%\)$", txt.strip()) or re.match(r"^[\d,]+$", txt.strip()):
-                _delete_shape(sh)  # redundant floating number overlay — baked into our chart image
-    pics = _pictures_by_x(s)
+    # slide 6 (v2 template only) — TRACKING SESSIONS BY TEAM & DEVICE.
+    #
+    # Two tables, side by side, both ranked shared-devices first. The slide can
+    # only ever show the top of each list, so the ranking is the design: a
+    # device transmitting under two team codes invalidates both teams' tracks
+    # and outranks a team that merely had a choppy day. Full lists live in the
+    # workbook's Session Data tabs, which the caption points at.
+    # Cursor rather than a fixed index: the three new slides are independently
+    # optional, so the second one's position depends on whether the first
+    # survived. Each block advances it only if its own slide is there.
+    new_slide_i = 4 + eff_offset
+
+    if sess_present:
+        s = slides[new_slide_i]
+        new_slide_i += 1
+        _set_title(s, SESSIONS_SLIDE_TITLE)
+        _clear_stale_content(s, below_in=CONTENT_TOP_IN - 0.10, drop_pictures=True)
+        sm = session_stats
+        narr = _find_narration(s)
+        if narr is not None:
+            segments = [
+                (f"{sm['total_teams']:,} teams", True),
+                (" transmitted on ", False), (f"{sm['date']}", True),
+                (" from ", False), (f"{sm['total_devices']:,} devices", True),
+                (", a median of ", False),
+                (f"{int(round(sm['median_sessions']))} "
+                 f"{_plural('track', round(sm['median_sessions']))} ", True),
+                ("per team.", False),
+            ]
+            if sm.get("shared_devices"):
+                n_dev = sm["shared_devices"]
+                segments += [
+                    (" ", False),
+                    (f"{n_dev:,} {_plural('device', n_dev)}", True),
+                    (" transmitted under more than one team code — neither "
+                     "team's track can be attributed with confidence.", False),
+                ]
+            _narration(narr, segments)
+
+        team_tbl = _shorten_imei_column(session_team_table)
+        shape = _add_dataframe_table(
+            s, team_tbl, SESSION_TEAM_BOX, max_rows=SESSION_TABLE_MAX_ROWS,
+            font_size=SESSION_TABLE_FONT_PT, row_height=TIME_TABLE_ROW_HEIGHT,
+            overflow_label="more teams", col_widths=SESSION_TEAM_COL_WIDTHS,
+            cell_margins=(TIME_TABLE_CELL_MARGIN_V, TIME_TABLE_CELL_MARGIN_H))
+        _table_caption(s, shape, SESSION_TEAM_BOX, SESSION_TEAM_CAPTION)
+
+        if session_device_table is not None:
+            shape = _add_dataframe_table(
+                s, session_device_table, SESSION_DEVICE_BOX,
+                max_rows=SESSION_TABLE_MAX_ROWS,
+                font_size=SESSION_TABLE_FONT_PT, row_height=TIME_TABLE_ROW_HEIGHT,
+                overflow_label="more devices", col_widths=SESSION_DEVICE_COL_WIDTHS,
+                cell_margins=(TIME_TABLE_CELL_MARGIN_V, TIME_TABLE_CELL_MARGIN_H))
+            _table_caption(s, shape, SESSION_DEVICE_BOX, SESSION_DEVICE_CAPTION)
+        else:
+            _placeholder_note(
+                s, SESSION_DEVICE_BOX,
+                "The track export carries no device/IMEI column, so per-device "
+                "figures could not be produced.")
+
+    # TRACKS PER DEVICE (IMEI) BY LGA, and TRACKS PER TEAM CODE BY LGA.
+    #
+    # One table each, LGA down the side. Every row comes from the SPATIAL
+    # attribution: each ping is intersected with the LGA boundary layer and the
+    # device/team is counted in the LGA its points actually fall in, not the
+    # one its export label claims. Devices are deduplicated by IMEI and teams
+    # by Team Code, so repeated submissions from one handset are one device.
+    #
+    # A team or device that worked two LGAs is counted in both — chosen
+    # deliberately, since field teams do cross boundaries and an LGA table that
+    # hides that misdescribes where the work happened. The consequence is that
+    # the column sums above the state total, so each slide states its own state
+    # total in the narration and the caption says why the two differ. Pings are
+    # shown beside tracks so every figure reconciles to a row count in the
+    # source export.
+    if dev_lga_present:
+        s = slides[new_slide_i]
+        new_slide_i += 1
+        _fill_lga_track_slide(
+            s, DEVICE_LGA_SLIDE_TITLE, geo["by_lga_dev"], geo["meta"],
+            unit="device", unit_col="Devices",
+            unit_total=geo["meta"]["total_devices"],
+            lga_sum=geo["meta"]["lga_sum_devices"])
+
+    if team_lga_present:
+        s = slides[new_slide_i]
+        new_slide_i += 1
+        _fill_lga_track_slide(
+            s, TEAM_LGA_SLIDE_TITLE, geo["by_lga_team"], geo["meta"],
+            unit="team code", unit_col="Teams",
+            unit_total=geo["meta"]["total_teams"],
+            lga_sum=geo["meta"]["lga_sum_teams"])
+
+    # slide 7 — STATE DAILY COVERAGE: this reporting day only, no prior days.
+    #
+    # Title and narration are set DIRECTLY, not by matching the template's own
+    # wording. The previous version searched for the phrase "planned for" to
+    # find the narration box; the revised template says "scheduled for", so the
+    # match failed silently and the slide kept the sample deck's numbers — a
+    # published report showing last campaign's figures, with no error raised.
+    # The slide is known by position; there is nothing to search for.
     daily_pic_boxes = COVERAGE_PIC_BOXES
+    s = slides[4 + eff_offset + sess_offset]
+    _set_title(s, f"State Daily Coverage - Day {day}")
+    narr = _find_narration(s)
+    if narr is not None:
+        _narration(narr, [
+            (f"{day_visited:,}", True), (" of the ", False),
+            (f"{day_planned:,} ", True),
+            ("geo-coded settlements scheduled for ", False),
+            (f"Day {day} ", True), ("were visited ", False),
+            (f"({day_pct:.1f}%)", True),
+            (", from this day's tracks alone across ", False),
+            (f"{n_lga} LGAs", True), (".", False),
+            ("" if day_is_true_daily else
+             " Daily status unavailable — figures shown are cumulative.", False),
+        ], content_top_in=COVERAGE_TOP_IN)
+    for sh in list(s.shapes):
+        # redundant floating number overlays — baked into our chart image
+        if (sh.has_text_frame and not _same_shape(sh, narr)
+                and not _same_shape(sh, s.shapes.title)):
+            txt = sh.text_frame.text.strip()
+            if re.match(r"^[\d,]+\s*\([\d.]+%\)$", txt) or re.match(r"^[\d,]+$", txt):
+                _delete_shape(sh)
+    pics = _pictures_by_x(s)
     if len(pics) >= 2:
         _replace_picture(s, pics[0], daily_donut, box=daily_pic_boxes[0])       # left = donut
         pics2 = _pictures_by_x(s)
@@ -1300,41 +2127,54 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
     elif len(pics) == 1:
         _replace_picture(s, pics[0], daily_donut, box=daily_pic_boxes[0])
         _fit_picture(s, daily_lga_bar, daily_pic_boxes[-1])
+    else:
+        _fit_picture(s, daily_donut, daily_pic_boxes[0])
+        _fit_picture(s, daily_lga_bar, daily_pic_boxes[-1])
 
-    # slide 6 — STATE CUMULATIVE COVERAGE: Day 1 through the reporting day.
-    # Same two-chart layout as slide 5 and the same stacked-bar design, so the
+    # slide 7 — STATE CUMULATIVE COVERAGE: Day 1 through the reporting day.
+    # Same two-chart layout as slide 6 and the same stacked-bar design, so the
     # two slides can be read against each other; only the scope differs.
-    s = slides[5 + eff_offset]
-    for sh in list(s.shapes):
-        if sh.has_text_frame and (sh.text_frame.text.strip().startswith("Cumulative Settlements Coverage")
-                                  or sh.text_frame.text.strip().startswith("Cumulative Coverage by LGA")):
-            _set_title(s, f"State Cumulative Coverage - Day 1 to Day {day}")
-        elif sh.has_text_frame and "cumulative" in sh.text_frame.text.lower():
-            _narration(sh, [
-                (f"{cum_visited:,}", True), (" of ", False),
-                (f"{cum_planned:,} ", True),
-                ("planned geo-coded settlements ", False),
-                (f"({cum_pct:.1f}%)", True),
-                (" have evidence of tracks from ", False),
-                (f"Day 1 to Day {day}", True),
-                (" across ", False), (f"{n_lga} LGAs", True),
-                (", counted whichever day each was scheduled for. ", False),
-                (f"{cum_planned - cum_visited:,} ", True),
-                ("remain unreached.", False),
-            ], content_top_in=1.66)
-        elif sh.shape_type == 13:
-            cum_donut = os.path.join(charts_folder, "state_coverage_donut.png")
-            box = daily_pic_boxes[0]
-            if os.path.exists(cum_donut):
-                _replace_picture(s, sh, cum_donut, box=box)  # left = donut
+    #
+    # Handled the same way as the daily slide, and for the same reason: the old
+    # picture loop replaced EVERY picture on the slide with the donut, then
+    # appended the LGA bar as a third. That was harmless while the slide came
+    # from a one-picture layout, but the revised template's slide carries two.
+    s = slides[5 + eff_offset + sess_offset]
+    _set_title(s, f"State Cumulative Coverage - Day 1 to Day {day}")
+    narr = _find_narration(s)
+    if narr is not None:
+        _narration(narr, [
+            (f"{cum_visited:,}", True), (" of ", False),
+            (f"{cum_planned:,} ", True),
+            ("planned geo-coded settlements ", False),
+            (f"({cum_pct:.1f}%)", True),
+            (" have evidence of tracks from ", False),
+            (f"Day 1 to Day {day}", True),
+            (" across ", False), (f"{n_lga} LGAs", True),
+            (", counted whichever day each was scheduled for. ", False),
+            (f"{cum_planned - cum_visited:,} ", True),
+            ("remain unreached.", False),
+        ], content_top_in=COVERAGE_TOP_IN)
+    cum_donut = os.path.join(charts_folder, "state_coverage_donut.png")
     lga_cum = os.path.join(charts_folder, "lga_cumulative_counts.png")
-    if os.path.exists(lga_cum):
-        _fit_picture(s, lga_cum, daily_pic_boxes[-1])         # right = LGA cumulative bar
+    cum_pics = _pictures_by_x(s)
+    if len(cum_pics) >= 2:
+        if os.path.exists(cum_donut):
+            _replace_picture(s, cum_pics[0], cum_donut, box=daily_pic_boxes[0])
+        cum_pics2 = _pictures_by_x(s)
+        if os.path.exists(lga_cum):
+            _replace_picture(s, cum_pics2[-1], lga_cum, box=daily_pic_boxes[-1])
+    else:
+        if cum_pics and os.path.exists(cum_donut):
+            _replace_picture(s, cum_pics[0], cum_donut, box=daily_pic_boxes[0])
+        elif os.path.exists(cum_donut):
+            _fit_picture(s, cum_donut, daily_pic_boxes[0])
+        if os.path.exists(lga_cum):
+            _fit_picture(s, lga_cum, daily_pic_boxes[-1])
 
-    # slide 7 — Cumulative Settlements Coverage (index 6: the second Team
-    # Deployment duplicate, inserted after the cumulative-coverage slide).
-    # Same layout as Time Spent: title + narrative + one chart.
-    s = slides[6 + eff_offset]
+    # slide 8 — Cumulative Settlements Coverage. Native slide in the revised
+    # template: title + narrative + one chart.
+    s = slides[6 + eff_offset + sess_offset]
     _set_title(s, "Cumulative Settlements Coverage")
     narr = _find_narration(s)
     if narr is not None:
@@ -1349,21 +2189,22 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
                     (f"{cum_cov['not_yet']:,} ", True),
                     (f"({cum_cov['not_yet_pct']:.1%})", True),
                     (" are still unvisited and carry into the remaining days.", False),
-                ], content_top_in=1.75)
-    for sh in s.shapes:
+                ], content_top_in=CONTENT_TOP_IN)
+    for sh in list(s.shapes):
         if sh.shape_type == 13:
             cum_chart = os.path.join(charts_folder, "state_cumulative_coverage.png")
             if os.path.exists(cum_chart):
-                _replace_picture(s, sh, cum_chart)
+                # Placed at the shared content top rather than the template's
+                # own 1.75in box, which sat under the narration band and
+                # produced a standing 2.16 sq in overlap on every run.
+                _replace_picture(s, sh, cum_chart, box=CUMSETT_CHART_BOX)
 
-    # slide 8 (when present) — Target Population and Household Coverage.
-    # Cloned from the Team Deployment layout, so the title style, background
-    # and branding are the template's own; only the content band below the
-    # narrative is rebuilt, into two estimate donuts plus a per-LGA bar.
-    map_offset = 0
-    if target_slide is not None:
-        map_offset = 1
-        s = slides[7 + eff_offset]
+    # slide 9 (when kept) — Target Population and Household Coverage. A native
+    # slide in the revised template; its content band is rebuilt into two
+    # estimate donuts plus a per-LGA bar. Deleted upstream when the settlement
+    # list carries neither estimate, which shifts the maps up one index.
+    if target_cov is not None:
+        s = slides[7 + eff_offset + sess_offset]
         _set_title(s, TARGET_SLIDE_TITLE)
 
         # DAILY finding first, then the cumulative position, then — only where
@@ -1403,7 +2244,7 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
             _narration(narr, segments)
         for sh in list(s.shapes):
             if sh.shape_type == 13:
-                # the cloned layout's lone picture is replaced by the panels below
+                # the template's picture boxes are replaced by the panels below
                 _delete_shape(sh)
 
         panels = []
@@ -1419,10 +2260,10 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
         for png, box in zip(panels, boxes):
             _fit_picture(s, png, box)
 
-    # statewide map — index 7, plus one if the target-population slide was
-    # inserted ahead of it
-    s = slides[7 + eff_offset + map_offset]
-    for sh in s.shapes:
+    # slide 10 — statewide map. Index 7 once the two conditional slides ahead
+    # of it are accounted for by eff_offset / map_offset.
+    s = slides[7 + eff_offset + sess_offset + map_offset]
+    for sh in list(s.shapes):
         if sh.has_text_frame:
             _set_title(s, f"State Coverage Map - Day {day}")
         elif sh.shape_type == 13:
@@ -1430,7 +2271,7 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
             if os.path.exists(statewide):
                 _replace_picture(s, sh, statewide, box=MAP_BOX)
 
-    # slides 9.. — one per implementing LGA (names taken from the boundary
+    # slides 11.. — one per implementing LGA (names taken from the boundary
     # data itself, not reverse-parsed from filenames — safe_name() replaces
     # "/" with "-" for the filename, e.g. "Birnin Magaji/Kiyaw", so the
     # filename alone isn't a reliable source for the real LGA name)
@@ -1443,7 +2284,7 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
                        else "{lga} LGA Coverage Map - Day {day}")
     lga_name_lookup = {safe_name(n): n for n in dip[lga_col].dropna().astype(str).str.strip().str.title().unique()}
     for i, png in enumerate(lga_pngs):
-        s = slides[8 + eff_offset + map_offset + i]
+        s = slides[8 + eff_offset + sess_offset + map_offset + i]
         # strip the state prefix ONCE. An unbounded replace also removed the
         # state's name from the middle of the LGA's own name, so in Nasarawa
         # state "Nasarawa_Nasarawa_Egon_day_2.png" became "Egon" and
@@ -1451,7 +2292,7 @@ def build_pptx_report(template_path: str, state: str, day: int, visitation_csv: 
         # from the wrong string.
         stem = png.replace(f"{state}_", "", 1).replace(f"_day_{day}.png", "")
         lga_name = lga_name_lookup.get(stem, stem.replace("_", " "))
-        for sh in s.shapes:
+        for sh in list(s.shapes):
             if sh.has_text_frame:
                 _set_title(s, lga_slide_title.format(lga=lga_name, day=day))
             elif sh.shape_type == 13:

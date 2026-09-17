@@ -1,46 +1,63 @@
-"""Team Time Efficiency — Coverage x Time cross-reference at TEAM level.
+"""Team Time Efficiency — actual clock time against the 08:00-16:00 operational window.
 
-Answers the operational question the ERM actually asks: *which teams spent a
-long time in the field and still covered little of their assigned area?* Time
-on the ground is only useful if it converts into gridded coverage; a team at
-three hours and 20% coverage is a different problem from a team at ten minutes
-and 20%, and needs a different conversation.
+Answers the operational question the ERM asks for accountability: *did this team's
+GPS-recorded activity actually cover the operational day?* Every team is measured
+against the same fixed window, 08:00-16:00 local time, regardless of when it happened
+to start or stop tracking.
 
-Rewritten from the `CoveragexTime` draft. Four things in that draft made its
-numbers wrong for this purpose, all fixed here:
+    Team Time Efficiency = Effective Operational Duration / 480 minutes
 
-    draft                                    this module
-    ------------------------------------     ------------------------------------
-    summed "GPS Points Count" straight        minutes = pings x PING_MINUTES,
-    into bins labelled in MINUTES, so         the same factor stage 2 and
-    every duration was halved                stage 3 already use
-    flagged "1 - 2 Hrs" AND "> 2 Hrs"        flags strictly > 120 minutes
-    as the long-duration risk
-    grouped by LGA|Ward|Settlement, so       groups by TEAM, which is what an
-    it could not name a team at all          ERM follow-up needs
-    coverage = visited ROWS / total rows,    coverage = visited CELLS / total
-    which is binary 0/100 when the input     CELLS, the same gridded measure
-    is one row per settlement                the workbook and maps report
+where Effective Operational Duration is the minutes of continuous tracking (gaps over
+`MAX_GAP_MINUTES` excluded, same rule `team_daily_time.py` uses) that fall INSIDE the
+window — time tracked before 08:00 or after 16:00 earns nothing, and a team that starts
+at 08:00 and tracks solidly to 16:00 scores 100%.
 
-Why cells and not an average of percentages
--------------------------------------------
-A ratio cannot be aggregated across settlements without its denominator.
-Averaging per-settlement coverage lets a settlement with four grid cells pull
-the mean as hard as one with four hundred. Team coverage here is
+Superseded design
+------------------
+This module used to cross-reference ping-count-derived field minutes against
+grid-weighted settlement coverage (>2 hrs & <50% coverage = flagged). That analysis
+answered a different question — was time in the field productive — and worked from the
+settlement-level visitation CSV, which carries no clock times at all. It has been
+replaced outright rather than kept alongside, per the decision to make this module's
+"Team Time Efficiency" the clock-window metric everywhere it is reported.
 
-    sum(cells visited across the team's settlements)
-    ------------------------------------------------
-    sum(total cells across the team's settlements)
+Why raw track pings, not the visitation CSV
+--------------------------------------------
+Start/End time, and therefore everything downstream of it, only exists in the raw GPS
+ping stream. The visitation CSV is a settlement-level aggregate with no timestamps.
+`per_team_per_date` reads the merged track export directly, the same file
+`team_daily_time.py` reads and with the same gap-detection rule (`MAX_GAP_MINUTES`,
+imported rather than redefined so the two can never drift apart) — this module adds the
+window clipping and the flag-reason logic on top.
 
-which is the same construction stage 2 uses per settlement, just one level up.
-Stage 2 keeps `Grid Cells` and `Grid Cells Visited` in the visitation CSV for
-exactly this reason.
+Two duration figures, not one
+------------------------------
+`Total Recorded Duration` is the team's whole day, unwindowed — exactly
+`team_daily_time._durations()`. `Effective Operational Duration` is the same
+gap-summing, but each gap is first clipped to `[08:00, 16:00]` before being added, so
+only in-window tracking counts. Both are reported: a team can rack up hours of
+Total Recorded Duration entirely outside the window and still score 0% efficiency, and
+the two numbers together are what make that visible rather than just asserted.
 
-Daily vs cumulative
--------------------
-Both scopes are produced and must not be mixed: `Daily Cells Visited` against
-today's tracks, `Grid Cells Visited` from Day 1 to date. A team can look
-efficient cumulatively and idle today.
+Flags are reasons, not a score
+--------------------------------
+A team is "Flagged" the moment ANY rule below fires, and every rule that fires is
+listed — a team can be both a late start AND under the efficiency floor, and both
+reasons are kept, joined with " + ", so a reader never has to guess which problem is
+being reported. Two rules distinguish "no data" from "bad data": a team absent from the
+track export entirely for the date is MISSING; a team present in the export whose
+timestamps could not be parsed at all is INVALID — these are different problems for a
+supervisor to chase and are named differently on purpose.
+
+Thresholds
+----------
+`LATE_START_GRACE_MINUTES`, `EARLY_STOP_GRACE_MINUTES`, `MIN_EFFICIENCY_PCT` and
+`EXCESSIVE_IDLE_MINUTES` have no prior value anywhere in this pipeline to inherit — they
+are set here to reasonable defaults and exposed as `analyse()` keyword arguments so a
+campaign can tune them without editing code. `MAX_GAP_MINUTES` (the tracking-gap rule)
+is NOT reconfigurable here — it is imported from `team_daily_time`, which already
+established it, so the two modules' notion of "was the tracker actually running" cannot
+diverge.
 """
 from __future__ import annotations
 
@@ -49,275 +66,420 @@ import os
 
 import pandas as pd
 
-# Same ping-to-minute factor as stage2_analysis and team_time_range. Imported
-# rather than redefined so the three can never drift apart.
-from team_time_range import PING_MINUTES, _find_col, _find_team_col, _join_codes
+from team_daily_time import MAX_GAP_MINUTES, SINGLE_PING_MINUTES
 
-# ---- thresholds -----------------------------------------------------------
-# "Long time in the field" is strictly MORE than two hours, matching the
-# operational definition. 120 minutes exactly is not flagged.
-LONG_FIELD_MINUTES = 120
-# "Low gridded area coverage" is below 50%, the pipeline's Partially Covered
-# floor and the 50% break in the stacked-bar bands.
-LOW_COVERAGE = 0.50
+# ---- the operational window -------------------------------------------------
+WINDOW_START_HOUR = 8
+WINDOW_END_HOUR = 16
+WINDOW_MINUTES = (WINDOW_END_HOUR - WINDOW_START_HOUR) * 60   # 480
+LOCAL_OFFSET = pd.Timedelta(hours=1)   # UTC+1, same convention as team_daily_time.py
 
-# Efficiency quadrants, from the two thresholds above.
-Q_FLAG = "Long time, low coverage"      # > 2 hrs and < 50% — the follow-up list
-Q_PRODUCTIVE = "Long time, good coverage"
-Q_EFFICIENT = "Short time, good coverage"
-Q_LOW_EFFORT = "Short time, low coverage"
-QUADRANT_ORDER = [Q_FLAG, Q_LOW_EFFORT, Q_PRODUCTIVE, Q_EFFICIENT]
+# ---- thresholds (configurable — see module docstring) -----------------------
+LATE_START_GRACE_MINUTES = 30
+EARLY_STOP_GRACE_MINUTES = 30
+MIN_EFFICIENCY_PCT = 0.50
+EXCESSIVE_IDLE_MINUTES = 60
 
-# ---- stationary teams -----------------------------------------------------
-# A separate and blunter question from the quadrants above: not "was the time
-# productive" but "did the team move at all". A team logging a substantial
-# stretch of field time whose pings never leave one or two grid cells has
-# reported working while its tracks show it in effectively one location — the
-# device sat somewhere. That is a data-integrity finding, not an efficiency
-# one, and it is the group an ERM most needs named.
-#
-# Thresholds are deliberately conservative so the list stays defensible: at
-# least half an hour of pings (below that, a single-cell settlement is normal),
-# and no more than one grid cell touched across everything the team was
-# assigned. A team with genuinely one tiny settlement can land here, which is
-# why the output is worded as "flag for review", not as a finding of fact.
-STATIONARY_MIN_MINUTES = 30
-STATIONARY_MAX_CELLS = 1
+# Flag reasons — the exact wording shown in the flagged-team table, the chart and
+# the workbook narration, so all three read the same vocabulary.
+REASON_LATE_START = "Late start"
+REASON_EARLY_STOP = "Early stop"
+REASON_INSUFFICIENT_TIME = "Insufficient operational time"
+REASON_EXCESSIVE_IDLE = "Excessive idle time"
+REASON_MISSING_START = "Missing start time"
+REASON_MISSING_END = "Missing end time"
+REASON_INVALID_TIMESTAMP = "Invalid timestamp"
 
-# Wording used in the follow-up table's Flag/Reason column, and on the chart's
-# legend, so a reader moving between the two sees the same rule stated the same
-# way. A team meeting both rules gets both, joined with " + ".
-REASON_LONG_LOW = f"> {LONG_FIELD_MINUTES // 60} hrs & < {LOW_COVERAGE:.0%} coverage"
-REASON_STATIONARY = f"<= {STATIONARY_MAX_CELLS} grid cell"
+FLAGGED = "Flagged"
+OK = "OK"
 
 MAX_TEAM_CODES = 40
 
 
-def quadrant(minutes: float, coverage: float) -> str:
-    """Place a team on the time x coverage grid."""
-    long_field = pd.notna(minutes) and minutes > LONG_FIELD_MINUTES
-    low_cov = pd.isna(coverage) or coverage < LOW_COVERAGE
-    if long_field:
-        return Q_FLAG if low_cov else Q_PRODUCTIVE
-    return Q_LOW_EFFORT if low_cov else Q_EFFICIENT
+def _norm_place(series: pd.Series) -> pd.Series:
+    """Normalise a place name for comparison — same rule used everywhere else."""
+    return (series.astype(str).str.replace("_", " ", regex=False)
+            .str.replace(r"\s+", " ", regex=True).str.strip().str.title())
 
 
-def _cell_cols(df: pd.DataFrame, scope: str) -> tuple[str | None, str | None]:
-    """(visited-cells column, total-cells column) for the requested scope."""
-    total = "Grid Cells" if "Grid Cells" in df.columns else None
-    visited = ("Daily Cells Visited" if scope == "daily" else "Grid Cells Visited")
-    return (visited if visited in df.columns else None), total
+def _join_codes(series: pd.Series) -> str:
+    codes = series.astype(str).tolist()
+    if len(codes) > MAX_TEAM_CODES:
+        codes = codes[:MAX_TEAM_CODES] + [f"… +{len(series) - MAX_TEAM_CODES} more"]
+    return ", ".join(codes)
 
 
-def analyse(visitation_csv: str | pd.DataFrame, scope: str = "cumulative",
-            state_name: str | None = None) -> dict:
-    """Team-level Coverage x Time for one temporal scope.
+def _team_lookup(dip: pd.DataFrame) -> dict:
+    """team_code -> {State, LGA, Ward}, from the visitation CSV.
 
-    `scope` is "daily" (the reporting day alone) or "cumulative" (Day 1 to
-    date). Returns:
-
-        per_team   one row per team — settlements, minutes, cells, coverage,
-                   time band, quadrant, and whether it is flagged
-        flagged    the follow-up list: > 2 hrs AND < 50% coverage, worst first
-        matrix     quadrant counts by LGA, for the workbook
-        summary    one row per quadrant with team counts and shares
-        meta       thresholds, totals and how minutes were derived
-
-    Raises ValueError only when the settlement analysis carries neither cell
-    counts nor a ping count — without one of those there is no metric to build.
+    Same construction as `stage3_erm_workbook.py`'s LGA backfill: dedupe on
+    team_code (first-seen wins — a team is assumed to sit in one Ward for the
+    campaign, the same latent assumption that backfill already makes for LGA) and
+    map onto whatever the raw pings didn't already carry.
     """
-    df = (visitation_csv if isinstance(visitation_csv, pd.DataFrame)
-          else pd.read_csv(visitation_csv, low_memory=False))
-    df = df.copy()
+    def pick(keyword, exclude=("code", "id")):
+        for col in dip.columns:
+            low = str(col).lower()
+            if keyword in low and not any(x in low for x in exclude):
+                return col
+        return None
 
-    lga_col = _find_col(df, "lga")
-    team_col = _find_team_col(df)
-    if team_col is None or lga_col is None:
-        raise ValueError(
-            f"Team efficiency needs team and LGA columns; the settlement "
-            f"analysis has {list(df.columns)[:20]}…")
+    team_col = next((c for c in dip.columns
+                     if "team" in str(c).lower() and "code" in str(c).lower()), None)
+    if not team_col:
+        return {}
+    state_col, lga_col, ward_col = pick("state"), pick("lga"), pick("ward")
 
-    visited_col, total_col = _cell_cols(df, scope)
-    ping_col = next((c for c in ("track_count", "pings") if c in df.columns), None)
-    if ping_col is None:
-        raise ValueError(
-            "Team efficiency needs a `track_count` column to derive field "
-            "minutes. Re-run stage 2 to produce it.")
-    if visited_col is None or total_col is None:
-        raise ValueError(
-            "Team efficiency needs `Grid Cells` and `Grid Cells Visited` "
-            "(or `Daily Cells Visited`) to weight coverage by grid area. "
-            "Re-run stage 2 — older visitation CSVs predate these columns.")
+    sub = dip.dropna(subset=[team_col]).drop_duplicates(subset=[team_col])
+    codes = sub[team_col].astype(str).str.strip()
+    lookup = {}
+    for i, tc in zip(sub.index, codes):
+        lookup[tc] = {
+            "State": str(sub.at[i, state_col]).strip() if state_col else "",
+            "LGA": (_norm_place(pd.Series([sub.at[i, lga_col]])).iloc[0]
+                    if lga_col else ""),
+            "Ward": str(sub.at[i, ward_col]).strip() if ward_col else "",
+        }
+    return lookup
 
-    work = pd.DataFrame({
-        "LGA": df[lga_col].astype(str).str.replace("_", " ", regex=False)
-        .str.replace(r"\s+", " ", regex=True).str.strip().str.title(),
-        "Team": df[team_col].astype(str).str.strip(),
-        "_pings": pd.to_numeric(df[ping_col], errors="coerce").fillna(0),
-        "_visited": pd.to_numeric(df[visited_col], errors="coerce").fillna(0),
-        "_cells": pd.to_numeric(df[total_col], errors="coerce").fillna(0),
-    })
-    work = work[work["Team"].notna() & ~work["Team"].isin(["", "nan", "None"])]
 
-    per_team = (work.groupby(["LGA", "Team"], dropna=False)
-                .agg(Settlements=("Team", "size"),
-                     Pings=("_pings", "sum"),
-                     **{"Cells Visited": ("_visited", "sum"),
-                        "Grid Cells": ("_cells", "sum")})
-                .reset_index())
-    per_team["Minutes"] = (per_team["Pings"] * PING_MINUTES).round().astype(int)
-    per_team["Hours"] = (per_team["Minutes"] / 60).round(2)
-    per_team["Coverage"] = (per_team["Cells Visited"] /
-                            per_team["Grid Cells"]).where(per_team["Grid Cells"] > 0)
-    per_team["Quadrant"] = [quadrant(m, c) for m, c
-                            in zip(per_team["Minutes"], per_team["Coverage"])]
-    per_team["Flagged"] = per_team["Quadrant"] == Q_FLAG
-    for c in ("Cells Visited", "Grid Cells"):
-        per_team[c] = per_team[c].round().astype(int)
+def _windowed_durations(times: pd.Series, window_start: pd.Timestamp,
+                        window_end: pd.Timestamp) -> tuple[float, float]:
+    """(Total Recorded Duration, Effective Operational Duration) in minutes.
 
-    # Reported working, but the tracks never left one place.
-    per_team["Stationary"] = ((per_team["Minutes"] >= STATIONARY_MIN_MINUTES) &
-                              (per_team["Cells Visited"] <= STATIONARY_MAX_CELLS))
-    stationary = (per_team[per_team["Stationary"]]
-                  .sort_values(["Minutes"], ascending=False)
-                  .reset_index(drop=True))
+    Total is `team_daily_time._durations()`'s rule verbatim — gaps over
+    `MAX_GAP_MINUTES` excluded, unwindowed. Effective is the same gap-summing with
+    each gap first clipped to `[window_start, window_end]`, so tracking outside the
+    window contributes nothing to it.
+    """
+    if len(times) <= 1:
+        in_window = bool(len(times) and window_start <= times.iloc[0] <= window_end)
+        credit = SINGLE_PING_MINUTES if len(times) else 0.0
+        return credit, (credit if in_window else 0.0)
 
-    flagged = (per_team[per_team["Flagged"]]
-               .sort_values(["Coverage", "Minutes"], ascending=[True, False])
-               .reset_index(drop=True))
+    gaps_min = times.diff().dropna().dt.total_seconds() / 60.0
+    total = float(gaps_min[gaps_min <= MAX_GAP_MINUTES].sum())
 
-    # The follow-up list an LGA supervisor actually works from: EVERY flagged
-    # team, both reasons together, in the five fields needed to act. A team can
-    # meet both rules, so the reason is combined rather than the team listed
-    # twice — the row count is then the number of teams to follow up, which is
-    # what the narration quotes.
-    flagged_any = per_team[per_team["Flagged"] | per_team["Stationary"]].copy()
+    effective = 0.0
+    prev = times.iloc[0]
+    for i in range(1, len(times)):
+        cur = times.iloc[i]
+        gap_min = (cur - prev).total_seconds() / 60.0
+        if gap_min <= MAX_GAP_MINUTES:
+            lo, hi = max(prev, window_start), min(cur, window_end)
+            if hi > lo:
+                effective += (hi - lo).total_seconds() / 60.0
+        prev = cur
+    return total, effective
+
+
+def _team_date_row(team_code: str, date: str, times: pd.Series, meta: dict,
+                   thresholds: dict) -> dict:
+    """One team's figures and flags for one tracking date, from its sorted pings."""
+    window_start = pd.Timestamp(f"{date} 00:00:00") + pd.Timedelta(hours=WINDOW_START_HOUR)
+    window_end = pd.Timestamp(f"{date} 00:00:00") + pd.Timedelta(hours=WINDOW_END_HOUR)
+
+    times = times.sort_values()
+    start = times.iloc[0] if len(times) else pd.NaT
+    end = times.iloc[-1] if len(times) else pd.NaT
+
+    total_min, effective_min = _windowed_durations(times, window_start, window_end)
+    efficiency = (effective_min / WINDOW_MINUTES) if WINDOW_MINUTES else 0.0
+
+    lo = max(start, window_start) if pd.notna(start) else pd.NaT
+    hi = min(end, window_end) if pd.notna(end) else pd.NaT
+    span_in_window = (max(0.0, (hi - lo).total_seconds() / 60.0)
+                      if pd.notna(lo) and pd.notna(hi) and hi > lo else 0.0)
+    idle_in_window = max(0.0, span_in_window - effective_min)
+
     reasons = []
-    for is_long_low, is_stationary in zip(flagged_any["Flagged"],
-                                          flagged_any["Stationary"]):
-        parts = []
-        if is_long_low:
-            parts.append(REASON_LONG_LOW)
-        if is_stationary:
-            parts.append(REASON_STATIONARY)
-        reasons.append(" + ".join(parts))
-    flagged_any["Flag/Reason"] = reasons
+    missing = pd.isna(start) or pd.isna(end)
+    if missing:
+        reasons.append(REASON_MISSING_START)
+        reasons.append(REASON_MISSING_END)
+    else:
+        if start > window_start + pd.Timedelta(minutes=thresholds["late_start_grace"]):
+            reasons.append(REASON_LATE_START)
+        if end < window_end - pd.Timedelta(minutes=thresholds["early_stop_grace"]):
+            reasons.append(REASON_EARLY_STOP)
+        if efficiency < thresholds["min_efficiency"]:
+            reasons.append(REASON_INSUFFICIENT_TIME)
+        if idle_in_window > thresholds["excessive_idle"]:
+            reasons.append(REASON_EXCESSIVE_IDLE)
 
-    flagged_table = pd.DataFrame({
-        "Team": flagged_any["Team"].astype(str),
-        "LGA": flagged_any["LGA"].astype(str),
-        "Time Spent (hrs)": flagged_any["Hours"],
-        "% Grid Covered": (flagged_any["Coverage"].fillna(0) * 100).round(1),
-        "Flag/Reason": flagged_any["Flag/Reason"],
-        # kept alongside so the percentage can be audited back to its inputs
-        "Cells Visited": flagged_any["Cells Visited"],
-        "Grid Cells": flagged_any["Grid Cells"],
-        "Settlements": flagged_any["Settlements"],
-    }).sort_values(["Flag/Reason", "% Grid Covered", "Time Spent (hrs)"],
-                   ascending=[True, True, False]).reset_index(drop=True)
-
-    matrix = pd.DataFrame()
-    if len(per_team):
-        matrix = (per_team.groupby(["LGA", "Quadrant"]).size().unstack(fill_value=0)
-                  .reindex(columns=QUADRANT_ORDER, fill_value=0)
-                  .sort_values(Q_FLAG, ascending=False).reset_index())
-
-    n = len(per_team)
-    summary = pd.DataFrame({
-        "Quadrant": QUADRANT_ORDER,
-        "Definition": [
-            f"> {LONG_FIELD_MINUTES // 60} hrs in field, < {LOW_COVERAGE:.0%} grid coverage",
-            f"≤ {LONG_FIELD_MINUTES // 60} hrs, < {LOW_COVERAGE:.0%} coverage",
-            f"> {LONG_FIELD_MINUTES // 60} hrs, ≥ {LOW_COVERAGE:.0%} coverage",
-            f"≤ {LONG_FIELD_MINUTES // 60} hrs, ≥ {LOW_COVERAGE:.0%} coverage"],
-        "Teams": [int((per_team["Quadrant"] == q).sum()) for q in QUADRANT_ORDER],
-    })
-    summary["Share"] = (summary["Teams"] / n) if n else 0.0
-
+    attrib = meta.get("lookup", {}).get(team_code, {})
     return {
-        "per_team": per_team, "flagged": flagged, "matrix": matrix,
-        "summary": summary, "stationary": stationary,
-        # every flagged team, both reasons, ready to publish
-        "flagged_table": flagged_table,
-        "meta": {
-            "scope": scope,
-            "long_field_minutes": LONG_FIELD_MINUTES,
-            "low_coverage": LOW_COVERAGE,
-            "ping_minutes": PING_MINUTES,
-            "coverage_basis": f"{visited_col} / {total_col} (grid-cell weighted)",
-            "total_teams": n,
-            "flagged_teams": int(len(flagged)),
-            "flagged_pct": (len(flagged) / n) if n else 0.0,
-            "flagged_codes": _join_codes(flagged["Team"]) if len(flagged) else "",
-            "stationary_min_minutes": STATIONARY_MIN_MINUTES,
-            "stationary_max_cells": STATIONARY_MAX_CELLS,
-            "stationary_teams": int(len(stationary)),
-            "stationary_pct": (len(stationary) / n) if n else 0.0,
-            "stationary_codes": (_join_codes(stationary["Team"])
-                                 if len(stationary) else ""),
-            "stationary_median_hours": (float(stationary["Hours"].median())
-                                        if len(stationary) else 0.0),
-            # teams meeting EITHER rule — the row count of `flagged_table`
-            "flagged_any": int(len(flagged_table)),
-            # The two rules overlap: a team can be both over 2 hours with low
-            # coverage AND stationary. These make the split explicit so the
-            # narration, the chart legend and the table can all reconcile
-            # instead of quoting three different totals.
-            "flagged_both": int((per_team["Flagged"] & per_team["Stationary"]).sum()),
-            "flagged_only": int((per_team["Flagged"] & ~per_team["Stationary"]).sum()),
-            "stationary_only": int((per_team["Stationary"] & ~per_team["Flagged"]).sum()),
-            "stationary_only_pct": (
-                int((per_team["Stationary"] & ~per_team["Flagged"]).sum()) / n
-                if n else 0.0),
-        },
+        "State": meta.get("state_by_team", {}).get(team_code) or attrib.get("State", ""),
+        "LGA": meta.get("lga_by_team", {}).get(team_code) or attrib.get("LGA", ""),
+        "Ward": meta.get("ward_by_team", {}).get(team_code) or attrib.get("Ward", ""),
+        "Team": team_code,
+        "Team Date": date,
+        "Start Time": start.strftime("%H:%M") if pd.notna(start) else "",
+        "End Time": end.strftime("%H:%M") if pd.notna(end) else "",
+        "Total Recorded Duration (min)": round(total_min, 1),
+        "Effective Operational Duration (min)": round(effective_min, 1),
+        "Team Time Efficiency (%)": round(efficiency * 100, 1),
+        "Pings": int(len(times)),
+        "Flag/Status": FLAGGED if reasons else OK,
+        "Reason for Flagging": " + ".join(reasons),
     }
 
 
-def analyse_daily_and_cumulative(visitation_csv) -> dict:
-    """Both scopes from one read, so a caller cannot mix them up."""
-    df = (visitation_csv if isinstance(visitation_csv, pd.DataFrame)
+def per_team_per_date(tracks_file: str, visitation_csv: str | pd.DataFrame,
+                      scope: dict | None = None, **thresholds) -> pd.DataFrame:
+    """Team Time Efficiency for every team, on every tracking date in the export.
+
+    `visitation_csv` supplies State/LGA/Ward for teams whose own pings don't carry
+    them (via `_team_lookup`, the same backfill pattern
+    `stage3_erm_workbook.py` uses for LGA) and the roster of teams expected to be
+    reporting, so a team absent from the tracks ENTIRELY on the reporting date still
+    gets a row — flagged MISSING rather than silently absent.
+
+    `scope` restricts the tracks to one campaign's state/LGAs/teams — pass
+    `team_daily_time.scope_from_visitation(visitation_csv)`; without it the figures
+    span every state in a national export.
+    """
+    from team_daily_time import scope_from_visitation
+    from track_columns import parse_timestamps, read_columns, require, resolve, valid_mask
+
+    dip = (visitation_csv if isinstance(visitation_csv, pd.DataFrame)
           else pd.read_csv(visitation_csv, low_memory=False))
-    out = {"daily": None, "cumulative": analyse(df, "cumulative")}
-    try:
-        out["daily"] = analyse(df, "daily")
-    except Exception:
-        pass    # older CSVs have no daily cell counts; cumulative still stands
+    scope = scope or scope_from_visitation(dip)
+    lookup = _team_lookup(dip)
+    want_state = scope.get("state")
+    want_lgas = scope.get("lgas") or frozenset()
+    want_teams = scope.get("teams") or frozenset()
+
+    header = read_columns(tracks_file)
+    cols = resolve(header)
+    require(cols, ("team", "ts"), header, "Team Time Efficiency")
+    ts_col, team_col = cols["ts"], cols["team"]
+    lga_col, ward_col, state_col = cols.get("lga"), cols.get("ward"), cols.get("state")
+    valid_col = cols["valid"]
+
+    keep = {c for c in (ts_col, team_col, lga_col, ward_col, state_col, valid_col) if c}
+
+    parts = []
+    raw_teams_seen: set[str] = set()
+    parsed_teams_seen: set[str] = set()
+    for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in keep,
+                             chunksize=500_000, dtype=str):
+        chunk = chunk.dropna(subset=[team_col])
+        chunk[team_col] = chunk[team_col].astype(str).str.strip()
+
+        if valid_col and valid_col in chunk.columns:
+            chunk = chunk[valid_mask(chunk[valid_col])]
+
+        if want_state and state_col and state_col in chunk.columns:
+            chunk = chunk[_norm_place(chunk[state_col]) == want_state]
+        elif want_lgas and lga_col and lga_col in chunk.columns:
+            chunk = chunk[_norm_place(chunk[lga_col]).isin(want_lgas)]
+        elif want_teams:
+            chunk = chunk[chunk[team_col].isin(want_teams)]
+        if not len(chunk):
+            continue
+
+        raw_teams_seen |= set(chunk[team_col].unique())
+        ts = parse_timestamps(chunk[ts_col])
+        local = ts + LOCAL_OFFSET
+        ok = local.notna()
+        parsed_teams_seen |= set(chunk.loc[ok, team_col].unique())
+
+        part = pd.DataFrame({
+            "team_code": chunk[team_col],
+            "state": (chunk[state_col].astype(str).str.strip()
+                     if state_col and state_col in chunk.columns else ""),
+            "lga": (chunk[lga_col].astype(str).str.strip()
+                   if lga_col and lga_col in chunk.columns else ""),
+            "ward": (chunk[ward_col].astype(str).str.strip()
+                    if ward_col and ward_col in chunk.columns else ""),
+            "_ts": local,
+        })
+        parts.append(part[ok])
+
+    allp = (pd.concat(parts, ignore_index=True) if parts else
+           pd.DataFrame(columns=["team_code", "state", "lga", "ward", "_ts"]))
+    allp["date"] = allp["_ts"].dt.strftime("%Y-%m-%d") if len(allp) else ""
+
+    # First-seen non-blank state/lga/ward per team, straight off its own pings —
+    # used ahead of the visitation-CSV lookup in `_team_date_row`.
+    def _first_nonblank(s: pd.Series) -> dict:
+        s = s[s.astype(str).str.strip() != ""]
+        return s.groupby(level=0).first().to_dict() if len(s) else {}
+
+    by_team = allp.set_index("team_code") if len(allp) else allp
+    state_by_team = _first_nonblank(by_team["state"]) if len(allp) else {}
+    lga_by_team = _first_nonblank(by_team["lga"].map(
+        lambda v: _norm_place(pd.Series([v])).iloc[0])) if len(allp) else {}
+    ward_by_team = _first_nonblank(by_team["ward"]) if len(allp) else {}
+    meta = {"lookup": lookup, "state_by_team": state_by_team,
+           "lga_by_team": lga_by_team, "ward_by_team": ward_by_team}
+
+    th = {
+        "late_start_grace": thresholds.get("late_start_grace", LATE_START_GRACE_MINUTES),
+        "early_stop_grace": thresholds.get("early_stop_grace", EARLY_STOP_GRACE_MINUTES),
+        "min_efficiency": thresholds.get("min_efficiency", MIN_EFFICIENCY_PCT),
+        "excessive_idle": thresholds.get("excessive_idle", EXCESSIVE_IDLE_MINUTES),
+    }
+
+    rows = []
+    if len(allp):
+        for (team_code, date), grp in allp.groupby(["team_code", "date"]):
+            rows.append(_team_date_row(team_code, date, grp["_ts"], meta, th))
+
+    # A team present in the export SOMEWHERE but whose timestamps never parsed is
+    # INVALID — a data-quality problem, not an absence, so it is kept file-level
+    # rather than tied to one date (a team's bad-timestamp pings aren't attributable
+    # to a particular date if the timestamp itself couldn't be read). Teams that are
+    # simply MISSING on the reporting date are resolved by `analyse()` instead, which
+    # knows which date is being reported and can tell "absent today" from "absent
+    # from the whole export" — this function alone cannot, since it accumulates
+    # `raw_teams_seen` across every date in the file.
+    invalid = sorted(raw_teams_seen - parsed_teams_seen)
+
+    out = pd.DataFrame(rows)
+    out.attrs["expected_teams"] = sorted(want_teams or set(lookup.keys()))
+    out.attrs["invalid_teams"] = invalid
+    out.attrs["meta"] = meta
+    out.attrs["thresholds"] = th
     return out
+
+
+def _placeholder_row(team_code: str, date: str, meta: dict, reason: str) -> dict:
+    attrib = meta.get("lookup", {}).get(team_code, {})
+    return {
+        "State": meta.get("state_by_team", {}).get(team_code) or attrib.get("State", ""),
+        "LGA": meta.get("lga_by_team", {}).get(team_code) or attrib.get("LGA", ""),
+        "Ward": meta.get("ward_by_team", {}).get(team_code) or attrib.get("Ward", ""),
+        "Team": team_code, "Team Date": date, "Start Time": "", "End Time": "",
+        "Total Recorded Duration (min)": 0.0, "Effective Operational Duration (min)": 0.0,
+        "Team Time Efficiency (%)": 0.0, "Pings": 0,
+        "Flag/Status": FLAGGED, "Reason for Flagging": reason,
+    }
+
+
+def analyse(tracks_file: str, visitation_csv: str | pd.DataFrame,
+           report_date: str | None = "latest", scope: dict | None = None,
+           **thresholds) -> dict:
+    """Team Time Efficiency for one reporting date (default: the latest in the export).
+
+    `report_date=None` returns every date's rows without selecting one — used for
+    `analysis_type="post_campaign"`, matching the branch `time_spent_analysis()`
+    already uses one function up in `stage3_erm_workbook.py`.
+
+    Returns:
+        per_team       one row per team for the reporting date (incl. MISSING/
+                       INVALID placeholder rows for teams absent from the export)
+        flagged_table  every flagged team, worst efficiency first
+        summary        counts by Flag/Status and by each reason
+        all_dates      every team-date row actually seen in the export
+        meta           thresholds used, totals, flagged codes
+    """
+    all_rows = per_team_per_date(tracks_file, visitation_csv, scope=scope, **thresholds)
+    meta_attrs = all_rows.attrs.get("meta", {})
+    th = all_rows.attrs.get("thresholds", {})
+    expected = set(all_rows.attrs.get("expected_teams", []))
+    invalid = set(all_rows.attrs.get("invalid_teams", []))
+
+    chosen = report_date
+    if chosen == "latest":
+        chosen = (str(all_rows["Team Date"].max())
+                 if len(all_rows) and "Team Date" in all_rows.columns else None)
+        if not chosen or chosen == "nan":
+            chosen = None
+
+    per_team = (all_rows[all_rows["Team Date"] == chosen] if chosen and len(all_rows)
+               else all_rows).reset_index(drop=True)
+
+    if chosen:
+        # MISSING is resolved here, not in `per_team_per_date`, because only this
+        # function knows which single date is being reported: a team seen on Day 1
+        # but not on today's `chosen` date must still be flagged missing for today,
+        # which a file-wide "ever seen" check cannot tell apart from being present.
+        present_today = set(per_team["Team"]) if len(per_team) else set()
+        absent = sorted(expected - present_today - invalid)
+        invalid_today = sorted(invalid - present_today)
+        placeholders = [_placeholder_row(tc, chosen, meta_attrs, REASON_MISSING_START
+                                         + " + " + REASON_MISSING_END) for tc in absent]
+        placeholders += [_placeholder_row(tc, chosen, meta_attrs, REASON_INVALID_TIMESTAMP)
+                         for tc in invalid_today]
+        if placeholders:
+            per_team = pd.concat([per_team, pd.DataFrame(placeholders)],
+                                 ignore_index=True)
+
+    flagged_table = (per_team[per_team["Flag/Status"] == FLAGGED]
+                     .sort_values(["Team Time Efficiency (%)"])
+                     .reset_index(drop=True))
+
+    n = len(per_team)
+    reason_counts = {}
+    if n:
+        for reasons in per_team["Reason for Flagging"]:
+            for r in [x for x in str(reasons).split(" + ") if x]:
+                reason_counts[r] = reason_counts.get(r, 0) + 1
+    summary = pd.DataFrame({
+        "Status": [OK, FLAGGED],
+        "Teams": [int((per_team["Flag/Status"] == OK).sum()) if n else 0,
+                 int(len(flagged_table))],
+    })
+    summary["Share"] = (summary["Teams"] / n) if n else 0.0
+    reason_summary = pd.DataFrame(
+        {"Reason": list(reason_counts.keys()), "Teams": list(reason_counts.values())}
+    ).sort_values("Teams", ascending=False).reset_index(drop=True)
+
+    return {
+        "per_team": per_team,
+        "flagged_table": flagged_table,
+        "summary": summary,
+        "reason_summary": reason_summary,
+        "all_dates": all_rows,
+        "meta": {
+            "window": f"{WINDOW_START_HOUR:02d}:00-{WINDOW_END_HOUR:02d}:00",
+            "window_minutes": WINDOW_MINUTES,
+            "date": chosen,
+            "total_teams": n,
+            "flagged_teams": int(len(flagged_table)),
+            "flagged_pct": (len(flagged_table) / n) if n else 0.0,
+            "flagged_codes": _join_codes(flagged_table["Team"]) if len(flagged_table) else "",
+            "avg_efficiency_pct": (float(per_team["Team Time Efficiency (%)"].mean())
+                                   if n else 0.0),
+            "reason_counts": reason_counts,
+            "thresholds": th,
+        },
+    }
 
 
 def describe(result: dict) -> str:
     m = result["meta"]
     return (f"{m['total_teams']:,} teams · {m['flagged_teams']:,} flagged "
-            f"({m['flagged_pct']:.1%}) > {m['long_field_minutes']} min with "
-            f"< {m['low_coverage']:.0%} coverage · {m['stationary_teams']:,} "
-            f"stationary (>= {m['stationary_min_minutes']} min, "
-            f"<= {m['stationary_max_cells']} grid cell) · {m['coverage_basis']}")
+            f"({m['flagged_pct']:.1%}) against the {m['window']} window · "
+            f"avg efficiency {m['avg_efficiency_pct']:.1f}%")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
-        description="Team Time Efficiency — coverage x time cross-reference by team")
+        description="Team Time Efficiency — clock time vs. the 08:00-16:00 window")
+    ap.add_argument("--tracks", required=True, help="merged_tracks.csv")
     ap.add_argument("--visitation-csv", required=True,
                     help="{State}_day_{N}_settlement_visitation.csv from stage 2")
-    ap.add_argument("--scope", choices=["daily", "cumulative"], default="cumulative")
+    ap.add_argument("--date", default="latest",
+                    help='"latest" (default), a YYYY-MM-DD date, or "all"')
     ap.add_argument("--output", default="Team_Time_Efficiency.xlsx")
     a = ap.parse_args()
 
-    res = analyse(a.visitation_csv, a.scope)
+    from team_daily_time import scope_from_visitation
+    dip = pd.read_csv(a.visitation_csv, low_memory=False)
+    res = analyse(a.tracks, dip, None if a.date == "all" else a.date,
+                 scope=scope_from_visitation(dip))
     print(describe(res))
     print()
     print(res["summary"].to_string(index=False))
-    if len(res["flagged"]):
-        print(f"\nFlagged teams ({len(res['flagged'])}):")
-        print(res["flagged"][["LGA", "Team", "Settlements", "Hours",
-                              "Cells Visited", "Grid Cells", "Coverage"]]
-              .head(25).to_string(index=False))
+    if len(res["flagged_table"]):
+        print(f"\nFlagged teams ({len(res['flagged_table'])}):")
+        print(res["flagged_table"].head(25).to_string(index=False))
     with pd.ExcelWriter(a.output, engine="xlsxwriter") as xl:
         res["summary"].to_excel(xl, sheet_name="Summary", index=False)
+        res["reason_summary"].to_excel(xl, sheet_name="Reasons", index=False)
         res["flagged_table"].to_excel(xl, sheet_name="Flagged Teams", index=False)
-        if len(res["stationary"]):
-            res["stationary"].to_excel(xl, sheet_name="Stationary Teams", index=False)
-        if len(res["matrix"]):
-            res["matrix"].to_excel(xl, sheet_name="Quadrants by LGA", index=False)
         res["per_team"].to_excel(xl, sheet_name="All Teams", index=False)
     print(f"\nSaved {os.path.abspath(a.output)}")

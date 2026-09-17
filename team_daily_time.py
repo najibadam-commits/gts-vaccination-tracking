@@ -173,7 +173,7 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
     want_teams = scope.get("teams") or frozenset()
 
     from track_columns import (parse_timestamps, read_columns, require,
-                               resolve as resolve_cols)
+                               resolve as resolve_cols, valid_mask)
 
     # Resolved by meaning, not by exact name — see track_columns. The export's
     # LGA field carries a boundary year and changes with each release.
@@ -181,8 +181,9 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
     cols = resolve_cols(header)
     require(cols, ("team", "ts"), header, "Daily time spent")
     ts_col, team_col, lga_col = cols["ts"], cols["team"], cols["lga"]
+    valid_col = cols["valid"]
 
-    keep = {c for c in (ts_col, team_col, lga_col) if c}
+    keep = {c for c in (ts_col, team_col, lga_col, valid_col) if c}
     state_col = cols["state"] if want_state else None
     if state_col:
         keep.add(state_col)
@@ -198,11 +199,21 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
         print(f"  time spent scoped to the campaign state by {route}")
 
     parts = []
-    seen = kept = 0
+    seen = kept = dropped_invalid = 0
     for chunk in pd.read_csv(tracks_file, usecols=lambda c: c in keep,
                              chunksize=chunksize, dtype=str):
         chunk = chunk.dropna(subset=[team_col])
         seen += len(chunk)
+
+        # Rows the export flags Valid = 0 are dropped, as they are everywhere
+        # else in the pipeline. Without this, a team whose only pings were
+        # rejected fixes still counted as having transmitted, and this module
+        # reported 767 teams where the spatial attribution and the session
+        # analysis — both of which filter — agreed on 755.
+        if valid_col and valid_col in chunk.columns:
+            ok = valid_mask(chunk[valid_col])
+            dropped_invalid += int((~ok).sum())
+            chunk = chunk[ok]
 
         if state_col and state_col in chunk.columns:
             chunk = chunk[_norm_place(chunk[state_col]) == want_state]
@@ -225,6 +236,8 @@ def per_team_per_date(tracks_file: str, chunksize: int = 500_000,
         })
         parts.append(part.dropna(subset=["_ts"]))
 
+    if dropped_invalid:
+        print(f"  {dropped_invalid:,} of {seen:,} pings dropped as Valid = 0")
     if route:
         print(f"  {kept:,} of {seen:,} pings are in the campaign state")
         if not kept and seen:

@@ -102,3 +102,8 @@ tr2.csv
 Thumbs.db
 desktop.ini
 ~$*
+
+# ---- local previews -------------------------------------------------------
+# Rendered previews of PIR figures/slides. They can be drawn from a real
+# campaign's data, so they stay on the analyst's machine.
+pir_preview/

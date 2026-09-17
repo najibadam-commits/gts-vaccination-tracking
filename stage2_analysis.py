@@ -30,6 +30,48 @@ def is_empty(value) -> bool:
     return False
 
 
+def coerce_coverage(series: pd.Series, label: str) -> pd.Series:
+    """A coverage column as numbers, saying loudly what it had to throw away.
+
+    `Coverage` is the fraction of a settlement's grid cells that recorded a
+    visit, so it is always a number the pipeline writes itself. It arrives as
+    TEXT more often than that suggests: the column a run starts from belongs to
+    whichever file the analyst picked as the previous DIP, and a settlement
+    list with a hand-added `Coverage` column, or an earlier export whose
+    fractions were reformatted in Excel, both come through as strings. Fed to
+    `np.nanmax` or `.astype(float)`, one such string took the entire run down
+    several minutes in, with a numpy dtype error that named neither the column
+    nor the file it came from.
+
+    Coercing in silence would be worse than crashing. A `Coverage` column
+    holding coverage CLASS names — "Low Coverage", "No Coverage" — is not a
+    damaged number column, it is the wrong column altogether, and quietly
+    turning it into NaN would discard every settlement's carried-forward
+    coverage and understate cumulative coverage across the whole report with
+    nothing on screen to say so. So it is coerced, the run continues, today's
+    figures are unaffected — and the loss is reported in terms specific enough
+    to act on.
+    """
+    numeric = pd.to_numeric(series, errors="coerce")
+    present = int(series.notna().sum())
+    lost = series.notna() & numeric.isna()
+    n_lost = int(lost.sum())
+    if not n_lost:
+        return numeric
+    examples = series[lost].astype(str).str.strip().value_counts().head(3)
+    shown = ", ".join(f"{v!r} (x{n:,})" for v, n in examples.items())
+    print(f"  WARNING: {n_lost:,} of {present:,} values in '{label}' are not "
+          f"numbers and were ignored: {shown}")
+    if n_lost == present:
+        print(f"           EVERY value in '{label}' was unusable. If this is "
+              f"the previous DIP, check that the file chosen for it is a "
+              f"visitation CSV from an earlier run of this pipeline, and that "
+              f"its 'Coverage' column holds fractions between 0 and 1 rather "
+              f"than coverage class names. Cumulative coverage for this run "
+              f"rests on today's tracks alone.")
+    return numeric
+
+
 def standardize_column_names(data: pd.DataFrame, columns=None) -> pd.DataFrame:
     columns = columns if columns is not None else data.columns
     col_map = {c: c.strip().replace(" ", "_").replace("\n", "").strip().lower() for c in columns}
@@ -74,6 +116,22 @@ def construct_unique(data: pd.DataFrame, unique_col: str = "unique") -> pd.DataF
     data.insert(0, unique_col, combined)
     return data
 
+
+def output_tag(day: int, analysis_type: str = "daily") -> str:
+    """The scope fragment stamped on a run's OUTPUT FILENAMES.
+
+    A daily run is one day of a campaign and is named for it. A post-campaign
+    run covers the whole campaign, and stamping its files "day_1" labels the
+    final report's own artifacts with a number that means nothing to anyone
+    reading them — the day exists on that path only so the cumulative COLUMN can
+    be named.
+
+    Column names are deliberately NOT affected. `day_{N}_cumm` is how stage 2
+    chains a run onto the previous one and how stages 3, 4 and 7 find the
+    cumulative status; renaming it would break chaining for no gain, since
+    nobody reads a column name off a report.
+    """
+    return "postcampaign" if analysis_type == "post_campaign" else f"day_{day}"
 
 def detect_day_column(day: int, data: pd.DataFrame, not_found: str = "raise") -> str | None:
     for col in data.columns:
@@ -191,6 +249,38 @@ def update_visitation_row(row, prev_day_cumm):
     return "Not Yet Visited"
 
 
+def _any_notnull(dip: pd.DataFrame, cols) -> pd.Series:
+    """True where ANY of `cols` is not null, tolerant of duplicate labels.
+
+    This replaces `dip.eval("(`day_1`.notnull()) | ...")`, which blew up with
+
+        TypeError: dtype 'day_4 object day_4 object dtype: object' not understood
+
+    on a real campaign. The cause is not the query: `standardize_column_names`
+    lowercases source columns, so a settlement list carrying its own legacy
+    planning flag (`Day_4`, `DAY 4`) has it renamed onto the `day_4` column
+    stage 2 derives from the tracks — two columns, one label. `DataFrame.eval`
+    then asks for `self.dtypes["day_4"]`, gets a two-row Series back instead of
+    a dtype, and fails inside pandas with a message that names neither the
+    column nor the file.
+
+    Selecting by label here can likewise return a DataFrame rather than a
+    Series, so each selection is collapsed with `.any(axis=1)` before being
+    combined. A duplicated day column is then harmless: a settlement counts as
+    visited if EITHER column says so, which is what the cumulative rule means.
+    """
+    mask = pd.Series(False, index=dip.index)
+    for col in cols:
+        if col is None or col not in dip.columns:
+            continue
+        selected = dip[col]
+        if isinstance(selected, pd.DataFrame):
+            mask = mask | selected.notna().any(axis=1)
+        else:
+            mask = mask | selected.notna()
+    return mask
+
+
 def set_cumulative_visitation(dip: pd.DataFrame, day: int) -> pd.DataFrame:
     prev_cumm = f"day_{day - 1}_cumm" if day > 1 else None
     dip["visitation"] = dip.apply(update_visitation_row, args=(prev_cumm,), axis=1)
@@ -198,8 +288,19 @@ def set_cumulative_visitation(dip: pd.DataFrame, day: int) -> pd.DataFrame:
     day_cols = [detect_day_column(i, dip) for i in range(1, day + 1)]
     dip = standardize_column_names(dip, day_cols)
     day_cols = [detect_day_column(i, dip) for i in range(1, day + 1)]
-    query = " | ".join([f"(`{c}`.notnull())" for c in day_cols])
-    dip["is_cumm"] = dip.eval(query, engine="python")
+
+    # Say so when the settlement list's own day column has collided with the
+    # derived one. It is not fatal — see `_any_notnull` — but it means the
+    # source file carries a planning flag under the same name as a GPS-derived
+    # status, and the analyst should know which columns those are.
+    dupes = sorted({c for c in day_cols
+                    if c and list(dip.columns).count(c) > 1})
+    if dupes:
+        print(f"  NOTE: the settlement list already has column(s) "
+              f"{', '.join(dupes)} under the same name stage 2 derives. Both "
+              f"are counted — a settlement is cumulative if either is set.")
+
+    dip["is_cumm"] = _any_notnull(dip, day_cols)
     dip[f"day_{day}_cumm"] = dip.apply(
         lambda r: r["visitation"] if (r["is_cumm"] is True or bool(r["is_cumm"])) or pd.notna(r["visitation"])
         else np.nan, axis=1)
@@ -535,7 +636,8 @@ def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,
                  voronoi_file: str, state_name: str, day: int, is_mop_up: bool,
                  output_folder: str, prev_ta_file: str | None = None,
                  prev_dip_file: str | None = None,
-                 track_date: str | None = "latest") -> dict:
+                 track_date: str | None = "latest",
+                 tag: str | None = None) -> dict:
     """Per-settlement visitation for one reporting day.
 
     `track_date` decides which pings count as "today":
@@ -674,10 +776,17 @@ def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,
         left_on="unique", right_index=True, how="left")
     dip = dip.merge(daily_summary, left_on="unique", right_index=True, how="left")
 
-    # final coverage = max(today, previous)
-    dip["Coverage"] = dip.apply(
-        lambda r: np.nanmax([v for v in [r["Coverage"], r["Prev_Coverage"]] if pd.notna(v)])
-        if pd.notna(r["Coverage"]) or pd.notna(r["Prev_Coverage"]) else np.nan, axis=1)
+    # final coverage = max(today, previous), elementwise and NaN-aware.
+    #
+    # `np.fmax` returns the other value where one side is NaN and NaN where
+    # both are — exactly the rule the per-row `apply` implemented, without
+    # building a two-element numpy array for every settlement. That array was
+    # the bug: as soon as one of the two values was text, numpy typed the pair
+    # as strings and `np.nanmax` raised `UFuncTypeError` on the whole run. It
+    # is also roughly an order of magnitude faster on a state-sized list.
+    dip["Coverage"] = np.fmax(
+        coerce_coverage(dip["Coverage"], "Coverage"),
+        coerce_coverage(dip["Prev_Coverage"], "Prev_Coverage"))
 
     # ---- cumulative evidence of tracks -----------------------------------
     # A settlement counts as reached cumulatively once tracks have been seen in
@@ -722,6 +831,33 @@ def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,
         print(f"  {n_by_evidence:,} settlements counted as cumulatively visited "
               f"on track evidence alone")
 
+    # The precondition every later stage silently assumes: that SOMETHING is
+    # planned. `cum_col` is the planning flag for the whole pipeline — charts,
+    # maps, workbook and report all start from `dip[cum_col].notna()` — and a
+    # settlement only gets a value there if the gridded target-area join
+    # reached it or a previous run already had a status for it. When neither is
+    # true for any row the column comes out entirely empty, and nothing
+    # complains until a chart several minutes downstream is handed an empty
+    # series and dies inside matplotlib on "All wedge sizes are zero", naming
+    # none of this. Said here, it is one line and it names the inputs to check.
+    n_planned = int(dip[cum_col].notna().sum())
+    print(f"  {n_planned:,} of {len(dip):,} settlements carry a cumulative "
+          f"status in '{cum_col}'")
+    if n_planned == 0:
+        print("  WARNING: NOT ONE settlement has a cumulative status, so every "
+              "figure from here on — coverage, visited counts, the maps and "
+              "every chart — will be empty. The usual cause is that the "
+              "settlement list and the gridded target-area layer do not share "
+              "the same State_LGA_Ward_Settlement keys, so the visitation join "
+              "matched nothing. Check that both files are for THIS state and "
+              "THIS campaign, and that the previous DIP, if one was chosen, is "
+              "a visitation CSV written by an earlier run of this pipeline.")
+    elif n_planned < len(dip) * 0.5:
+        print(f"  NOTE: {len(dip) - n_planned:,} settlements "
+              f"({1 - n_planned / len(dip):.0%}) have no cumulative status and "
+              f"are excluded from every planned total. That is normal only if "
+              f"the list covers more than this campaign.")
+
     # DAILY status column, alongside the cumulative one. `cum_col` carries every
     # day up to and including today; `daily_col` is today alone. Reporting picks
     # whichever it means — see generate_ta_daily_summary.
@@ -744,16 +880,19 @@ def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,
             dip[c] = pd.to_numeric(dip[c], errors="coerce").fillna(0).astype(int)
 
     # ------------------------------------------------------------- outputs
-    out_csv = os.path.join(output_folder, f"{state_name}_day_{day}_settlement_visitation.csv")
+    # `tag` names the outputs for what they COVER — see `output_tag`. Defaults
+    # to this run's day, so the daily path is byte-for-byte unchanged.
+    tag = tag or f"day_{day}"
+    out_csv = os.path.join(output_folder, f"{state_name}_{tag}_settlement_visitation.csv")
     dip.to_csv(out_csv, index=False)
     print(f"Saved {out_csv}")
 
     try:
         import pyarrow  # noqa: F401
-        ta_out = os.path.join(output_folder, f"gridded_ta_day_{day}.parquet")
+        ta_out = os.path.join(output_folder, f"gridded_ta_{tag}.parquet")
         gpd.GeoDataFrame(ta_updated, geometry="geometry", crs=ta.crs).to_parquet(ta_out)
     except ImportError:
-        ta_out = os.path.join(output_folder, f"gridded_ta_day_{day}.gpkg")
+        ta_out = os.path.join(output_folder, f"gridded_ta_{tag}.gpkg")
         gpd.GeoDataFrame(ta_updated, geometry="geometry", crs=ta.crs).to_file(ta_out, driver="GPKG")
 
     # map-ready point layers
@@ -769,7 +908,7 @@ def run_analysis(settlement_file: str, tracks_file: str, gridded_ta_file: str,
                                 crs="EPSG:4326")
         for status, name in [("Visited", "visited"), ("Not Visited", "not_visited")]:
             sub = gpts[gpts[cum_col] == status]
-            p = os.path.join(output_folder, f"{name}_day_{day}.geojson")
+            p = os.path.join(output_folder, f"{name}_{tag}.geojson")
             if len(sub):
                 sub.to_file(p, driver="GeoJSON")
                 map_layers[name] = p

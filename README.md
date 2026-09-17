@@ -5,7 +5,7 @@ Automates the full daily workflow: **merge tracks → visitation analysis → ER
 One pipeline, two analysis types — pick at the start of the run (`--analysis-type` on the command line, or step 0️⃣ in the web app):
 
 - **Daily ERM Analysis** (default) — today's numbers for the evening review meeting: Daily ERM Analysis workbook tab, the Daily Tracking Report `.docx`, and (optionally) your organization's PPTX report template.
-- **Post-Campaign Analysis** — whole-campaign numbers for the Post-Implementation Report: a Post-Campaign Analysis workbook tab and a Post-Implementation Report (PIR) `.docx`. When this analysis type is selected, the pipeline automatically picks up the **Post Implementation Report sample** file kept alongside the pipeline and uses it as the reporting template — no manual selection needed (pass `--pir-template`/upload a different file in the web app's step 6️⃣ to override). Point the campaign day at the FINAL day (chaining prior days via `--prev-dip`) and, ideally, supply all campaign days' tracks so team deployment and time-spent reflect the whole campaign, not just one day. The organization PPTX template is not used for this analysis type — only the daily path builds a PPTX.
+- **Post-Campaign Analysis** — whole-campaign numbers for the Post-Implementation Report: a Post-Campaign Analysis workbook tab and a Post-Implementation Report (PIR) **`.pptx`**, built by filling the organization's own **"Post Implementation Report" deck** — the report the team presents to stakeholders. The pipeline picks that deck up automatically from alongside the pipeline; no manual selection is needed (pass `--pir-template`/upload a different `.pptx` in the web app's step 6️⃣ to override). Point the campaign day at the FINAL day (chaining prior days via `--prev-dip`) and, ideally, supply all campaign days' tracks so team deployment and time-spent reflect the whole campaign, not just one day. The organization PPTX template is not used for this analysis type — only the daily path builds a PPTX.
 
 Both analysis types read the same input datasets (tracks, settlements, target areas, boundaries); only the processing/aggregation and the final report differ.
 
@@ -20,7 +20,7 @@ Both analysis types read the same input datasets (tracks, settlements, target ar
 | 4b | `stage_charts.py` | Report charts styled after the ERM samples: GTS Trackers bar, coverage donut with centre total, LGA 100% stacked bar, cumulative range stacked bar, time-spent bar, team time-range bar, and the **estimated <5 population / household reached-vs-not-reached donuts plus per-LGA bar** (post-campaign adds a missed-children chart) |
 | 5 | `stage5_report.py` | **Daily ERM Analysis only** — Daily Tracking Report draft (.docx) with charts, tables, maps and auto narration — you add photos and challenges |
 | 6 | `stage6_pptx_report.py` | **Daily ERM Analysis only** — populates your **organization's own PPTX report template** with this day's numbers, charts and maps — same slides, same branding, ready to present |
-| 7 | `stage7_pir_report.py` | **Post-Campaign Analysis only** — Post-Implementation Report (.docx), automatically built using the **Post Implementation Report sample** as the reporting template (auto-detected next to the pipeline via `find_default_pir_template`, or pass `--pir-template`): whole-campaign coverage summary, team deployment (deployed/reported/pending), time-spent, missed-children and settlement-coordinates tables, maps and charts |
+| 7 | `stage7_pir_report.py` | **Post-Campaign Analysis only** — the Post-Implementation Report **deck** (.pptx), built by filling the **"Post Implementation Report" sample** slide by slide (auto-detected next to the pipeline via `find_default_pir_template`, or pass `--pir-template`). Sections follow the sample: background, state settlement coverage (donut + LGA coverage mix), cumulative settlements coverage, potentially missed children, settlements without geo-coordinates, statewide coverage map, one slide per LGA (donut + per-ward coverage bar), settlement coverage examples, data-driven challenges and recommendations, photo placeholders. The sample's **Team Deployed/Devices** slide is dropped — see "What the final report leaves out" below. Indicators come from `pir_analysis.py`, charts from `pir_charts.py`, example figures from `pir_examples.py` |
 
 ### Team deployment (both analysis types)
 
@@ -46,10 +46,10 @@ Opens a browser page at `http://localhost:8501`. Workflow:
 1. Upload the **planned settlements** CSV — the app auto-detects the state, LGAs and wards and shows them for confirmation (a dropdown appears if the file covers several states).
 2. Upload the day's **track exports** (multiple files at once) — for Post-Campaign Analysis, upload all campaign days' tracks here if you have them, so team deployment and time-spent reflect the whole campaign.
 3. Upload the **gridded** and **voronoi** target areas.
-4. Set the campaign day (attach the previous day's visitation CSV for day 2+, tick mop-up if applicable) and enter the **total teams deployed** — this drives Teams Reported/Pending/Reporting % throughout; leave at 0 to fall back to the settlement list's own team-code count.
+4. **Daily ERM Analysis** — set the campaign day (attach the previous day's visitation CSV for day 2+, tick mop-up if applicable) and enter the **total teams deployed**, which drives Teams Reported/Pending/Reporting % throughout; leave at 0 to fall back to the settlement list's own team-code count. **Post-Campaign Analysis** — neither is asked for (see "What the final report leaves out"); the step becomes a single optional upload for the previous run's visitation CSV, needed only if you do not have every campaign day's tracks.
 5. Optionally upload a **State PHC logo** — since the campaign runs in a different state each time, this is separate from the fixed organization logo and is placed on the title page/slide.
-6. **Daily ERM Analysis only** — optionally point to your **organization's .pptx report template**; not used for Post-Campaign Analysis, which builds the PIR .docx instead. Either way, type the **campaign title** (e.g. "Polio SIA April 2026") — this appears on the report's title page/slide.
-7. Click **Run Analysis**, then download the report (.docx — Daily Tracking Report draft, or the Post-Implementation Report for Post-Campaign Analysis), the PPTX report in your org template (daily only, if provided), the ERM workbook, visitation CSV, and a zip of all maps + charts; preview any map or chart in the page.
+6. **Daily ERM Analysis** — optionally point to your **organization's .pptx report template**. **Post-Campaign Analysis** — the "Post Implementation Report" deck found beside the app is shown and applied automatically. Either way, type the **campaign title** (e.g. "Polio SIA April 2026") — this appears on the report's title page/slide.
+7. Click **Run Analysis**, then download the report (the Daily Tracking Report draft `.docx`, or the Post-Implementation Report `.pptx` for Post-Campaign Analysis), the PPTX report in your org template (daily only, if provided), the ERM workbook, visitation CSV, and a zip of all maps + charts; preview any map or chart in the page.
 
 ### Editing pipeline code while the app is running
 
@@ -107,7 +107,7 @@ For **mop-up days**, add `--mopup`. To also export a GeoJSON of merged tracks fo
 To also build the report in your **organization's PPTX template**, add:
 
 ```bash
-    --pptx-template "organization's reporting template.pptx" --campaign-name "Polio SIA April 2026"
+    --pptx-template ../eHA_Revised_reporting_template.pptx --campaign-name "Polio SIA April 2026"
 ```
 
 `--campaign-name` is shown on both the .docx title page and the PPTX title slide. Add `--state-logo state_phc_logo.png` to place the campaign's State PHC logo on the title page/slide (separate from `--logo`, the fixed organization logo used on maps and elsewhere).
@@ -118,9 +118,9 @@ To run the **Post-Campaign Analysis** instead of the Daily ERM Analysis, add `--
     --analysis-type post_campaign --teams-deployed 240
 ```
 
-Point `--day`/`--prev-dip` at the campaign's FINAL day (chained through prior days as usual) and, ideally, pass all campaign days' tracks in `--tracks-folder`. This builds a Post-Campaign Analysis workbook tab and a Post-Implementation Report `.docx` instead of the daily workbook tab, `.docx` report and PPTX — `--pptx-template` is ignored under `post_campaign`. `--teams-deployed` also works with `--analysis-type daily` (the default), where it overrides the settlement-list-derived total for that single day.
+Point `--day`/`--prev-dip` at the campaign's FINAL day (chained through prior days as usual) and, ideally, pass all campaign days' tracks in `--tracks-folder`. This builds a Post-Campaign Analysis workbook tab and a Post-Implementation Report `.pptx` instead of the daily workbook tab, `.docx` report and PPTX — `--pptx-template` is ignored under `post_campaign`. `--teams-deployed` still feeds the workbook's Team Deploy-Report tab under `post_campaign`, but nothing in the PIR reads it. `--teams-deployed` also works with `--analysis-type daily` (the default), where it overrides the settlement-list-derived total for that single day.
 
-The PIR's reporting template is picked up automatically — the pipeline looks next to the script for a file named like **"Post Implementation Report sample"** and uses it, no flag needed. Pass `--pir-template path/to/file.pdf` to point at a different sample/template, or to be explicit about which one a given run used.
+The PIR's template is picked up automatically — the pipeline looks next to the script for a `.pptx` named like **"Post Implementation Report ..."** and fills it, no flag needed; where several are present the newest wins, so a "... 2027.pptx" supersedes "... 2026.pptx" with no code change. Pass `--pir-template path/to/deck.pptx` to point at a different one. It **must be a .pptx**: stage 7 builds the report by filling that deck, so a `.pdf` or `.docx` is rejected rather than silently ignored.
 
 Requirements: `pip install pandas geopandas pyogrio xlsxwriter python-docx python-pptx pillow matplotlib`
 (optional: `pyarrow` for faster intermediate files).
@@ -143,11 +143,11 @@ Common to both analysis types, per day:
 - `visited_day_{N}.geojson` / `not_visited_day_{N}.geojson` — map-ready layers (also load directly in QGIS)
 - `maps/`, `charts/` — statewide + per-LGA coverage PNGs and report charts
 - `team_deploy_day_{N}.csv` / `time_spent_day_{N}.csv` — Team Deploy-Report and Time Spent Analysis data behind the workbook/report tables and charts
-- `flagged_teams_day_{N}.csv` — every team flagged for supervisory follow-up (Team, LGA, hours, % grid covered, reason), same rows as the workbook's **Flagged Teams** tab
+- `flagged_teams_day_{N}.csv` — every team flagged for supervisory follow-up against the 08:00-16:00 operational window (State, LGA, Ward, Team, Team Date, Start/End Time, Total Recorded/Effective Operational Duration, Team Time Efficiency %, Flag/Status, Reason for Flagging), same rows as the workbook's **Flagged Teams** tab
 
 **Daily ERM Analysis** (`--analysis-type daily`, the default):
 
-- `{State}_Day_{N}_Vaccination_Tracking_ERM_Analysis.xlsx` — Team Deploy-Report, Time Spent Analysis, the Team Range (State/LGA/Ward) and Teams Under 12 Mins tabs, the Target Pop & HH Coverage tab, and the Daily ERM Analysis tab, with native Excel charts
+- `{State}_Day_{N}_Vaccination_Tracking_ERM_Analysis.xlsx` — Team Deploy-Report, Time Spent Analysis, the Team Range (State/LGA/Ward) and Teams Under 12 Mins tabs, the Tracking Sessions tabs (`Tracking Sessions`, `Session Data (Team)`, `Session Data (Device)`), the Target Pop & HH Coverage tab, and the Daily ERM Analysis tab, with native Excel charts
 - `charts/team_time_range.png` — teams per time-spent band, used on the Time Spent Analysis slide
 - `charts/target_children_donut.png`, `charts/target_households_donut.png`, `charts/target_coverage_by_lga.png` — used on the Target Population and Household Coverage Analysis slide
 - `{State}_Day_{N}_Daily_Tracking_Report_DRAFT.docx` — report draft with tables and all maps embedded
@@ -156,7 +156,8 @@ Common to both analysis types, per day:
 **Post-Campaign Analysis** (`--analysis-type post_campaign`):
 
 - `{State}_PostCampaign_ERM_Analysis.xlsx` — Team Deploy-Report, Time Spent Analysis and Post-Campaign Analysis tabs (adds settlements with/without geo-coordinates, not-visited-by-LGA ranking, potentially missed children)
-- `{State}_Post_Implementation_Report.docx` — Post-Implementation Report, built automatically using the **Post Implementation Report sample** as the reporting template (`--pir-template` to override; the web app auto-detects and shows the file it found in step 6️⃣)
+- `{State}_Post_Implementation_Report.pptx` — the Post-Implementation Report deck, built by filling the **"Post Implementation Report"** sample (`--pir-template` to override; the web app auto-detects and shows the file it found in step 6️⃣)
+- `charts/pir/` — every figure on that deck: the deployment bar, the state coverage donut and LGA coverage mix, the cumulative coverage bar, the not-visited and missed-children bars, the geo-coordinate coverage bar, one donut and one per-ward bar per LGA, and the four settlement coverage examples
 - `charts/missed_children.png` — additional chart used only in this report type
 - No PPTX is produced for this analysis type.
 
@@ -179,13 +180,290 @@ Household Coverage Analysis** slide is inserted after the cumulative-coverage sl
 above). The day-over-day settlement comparison table (template slide 7) isn't auto-filled yet and is
 dropped from the generated deck — let me know if you'd like that added next.
 
-Generated deck order: title, background, team deployment, time spent, state daily coverage, cumulative
-coverage, cumulative settlements coverage, **target population & household coverage**, statewide map, one
-slide per LGA, challenges, photos, thank-you.
+The template is **`eHA_Revised_reporting_template.pptx`** — the deck the team approved — and stage 6 now
+follows it exactly: every slide it fills already exists in the template, in the template's order. Nothing is
+inserted or merged at build time. Deck order: title, background, team deployment, time spent, **team time
+efficiency**, state daily coverage, state cumulative coverage, cumulative settlements coverage, **target
+population & household coverage**, statewide map, one slide per LGA, challenges, photos, thank-you.
 
-If your organization updates the template's layout, the slide-shape mapping at the top of
-`stage6_pptx_report.py` (`SLIDE_TITLE`, `SLIDE_BACKGROUND`, etc.) will need to be re-verified against the
-new file.
+Two slides are conditional: **Team Time Efficiency** is deleted when there is no usable merged track export
+(no clock start/end times to measure against the operational window) and no `team_efficiency.png` already
+rendered; **Target Population Coverage Analysis** is deleted when the settlement list carries neither the
+population estimates it needs.
+
+Slides are addressed by POSITION, so a template whose order differs does not raise an error — it produces a
+deck that opens cleanly and is wrong from slide 4 down. That is what happened while the app was still
+picking up the superseded `organization's reporting template.pptx`. If the template is revised again,
+re-verify the `SLIDE_*` constants at the top of `stage6_pptx_report.py` against the new file BEFORE the next
+campaign, and run `python test_revised_template_slide_map.py`, which asserts the built deck's slide order and
+titles.
+
+## Post-Implementation Report
+
+The PIR is the whole-campaign report the team presents to stakeholders. It is
+produced by **filling the organization's own "Post Implementation Report" deck**
+rather than by generating a document from scratch, so what comes out of the
+pipeline is the format the audience already knows. Three modules do the work,
+and they are separate on purpose — the reporting logic can be revised without
+touching the daily path:
+
+| Module | Job |
+|---|---|
+| `pir_analysis.py` | every indicator, computed once. No drawing, no .pptx |
+| `pir_charts.py` | the eight chart types the sample uses, and nothing else |
+| `pir_examples.py` | the four Settlement Coverage Example figures |
+| `stage7_pir_report.py` | fills the template deck and places the results |
+
+### The identity every figure is derived from
+
+The sample's own arithmetic is the specification:
+
+```
+planned settlements = Fully + Partially + Low + Very Low + No Coverage
+visited settlements = planned − No Coverage
+```
+
+so on the deck a settlement is "visited" exactly when its coverage class is
+anything other than "No Coverage", and the donut's slices add up to the planned
+total. Stage 2 writes two things that can disagree about that: the grid-cell
+class in `Settlement Coverage`, and `Visited`/`Not Visited` in `day_{N}_cumm`.
+They part company for a settlement that has tracks but no polygon in the gridded
+target-area layer — pings, therefore reached, but no measurable coverage, so it
+classifies as "No Coverage".
+
+`pir_analysis.reconciled_classes` resolves it the way `stage_charts
+.cumulative_coverage_stats` already does for the daily deck: reached-but-not-
+measurable moves into **Low Coverage**. Every PIR figure comes off that one
+reconciled Series, at state, LGA and ward level, so the donut, the bars and the
+narration cannot disagree. `test_pir_report.py` asserts the identity directly.
+
+Everything is **cumulative** — Day 1 through the final day. The daily columns
+are not read. Point `--day`/`--prev-dip` at the campaign's final day.
+
+### What the final report leaves out
+
+**Team deployment and the campaign day are implementation measures, not
+reporting ones.** Teams deployed, teams reported, teams pending and reporting %
+tell the LGA team who to chase *today* — that is the job of the Daily ERM
+Analysis, and stage 6's deck and the workbook's Team Deploy-Report tab keep them
+in full. In a report written after the campaign has ended there is nobody left
+to chase, and the figure adds a number the reader cannot act on. So:
+
+- the sample's **Team Deployed/Devices** slide is removed from the generated
+  deck, not filled;
+- no team count appears anywhere else in it (the Background bullet is gone, and
+  the Challenges narrative no longer opens on teams that returned no tracks);
+- the app's **Post-Campaign** path stops asking for the campaign day, the mop-up
+  flag and the total teams deployed. Stage 2 still needs a day number internally
+  — it names its cumulative column `day_{N}_cumm` and chains runs on it — so the
+  app reads that number back off the previous run's visitation CSV
+  (`day_from_prev_visitation`) instead of asking. No prior CSV means day 1,
+  which is what a single whole-campaign run should be.
+
+The regression test asserts the slide is gone AND that no deployment wording
+survives anywhere in the deck, since a slide can be removed while its numbers
+leak into a narration.
+
+Field time is treated differently and is kept: teams that transmitted no usable
+track points at all is a **tracking-quality** finding, and a final report should
+say when part of the campaign could not be verified.
+
+### Every LGA chart is the same chart
+
+Each LGA- and ward-level figure in the report is a **stacked composition**:
+categories in one order, best class at the bottom, the shortfall on top, counts
+printed inside each segment, counts too small to fit lifted above the whole bar
+in the segment's own colour, legend above the plot. `pir_charts._stacked` is the
+only implementation; the callers differ only in categories, palette and y scale.
+
+Two were previously plain single-series columns — settlements not visited per
+LGA, and potentially missed children per LGA. They are stacked against their own
+whole now, which is both consistent and more honest: 817 not-visited settlements
+reads very differently in an LGA of 900 than in one of 1,000, and a plain column
+could not show that. **The reported figures are unchanged** — the not-visited and
+missed-children counts are the same numbers, still labelled on their own segment,
+and the slide's "N =" totals still come from `not_visited_by_lga` and
+`missed_children_by_lga`. What is added is the part they came out of.
+
+The stack also ran **upside down** against the sample until this pass — No
+Coverage at the bottom, Fully Covered on top — while the legend read correctly,
+which is exactly why it survived review. `test_pir_report.py` now reads the bar
+bottoms back out of a render and asserts the direction.
+
+### The implementation map
+
+Styled to the reference sheet. The change worth calling out is that **the
+shading marks what is NOT in the campaign**: implementing LGAs are plain white,
+and the LGAs left out are hatched pink, so the gap is what stands out. This
+module used to do the reverse — shading the implementing LGAs and leaving the
+excluded ones white, with the legend labelling the pink "Implementing LGAs" — so
+a reader scanning for coverage saw the campaign as the exception rather than the
+rule.
+
+Also from the reference: adjoining states are labelled in Title Case, bold and
+**underlined** (the underline is what distinguishes a state from an LGA at a
+glance — matplotlib has no underline property, so `_underline_labels` measures
+the rendered text and draws a rule under it); LGA names are dark olive; the
+adjoining states are one flat grey with their internal divisions undrawn, and
+the translucent wash that used to sit over them is gone; and a thin rule frames
+the drawn area.
+
+On the **per-LGA** maps the focal LGA is now named as well as outlined, at
+1.65x the surrounding LGAs' label size and in black — the heavy outline alone
+says "something here is different", not "THIS one".
+
+Legend wording is matched by role, and "Non-Implementing" is tested before
+"Implementing" — it contains it, so the looser test would otherwise claim the
+shaded entry and give it the white swatch.
+
+### Where the generated deck deliberately differs from the sample
+
+Four places, each because following the sample exactly would produce something
+either wrong or unbuildable:
+
+- **Coverage classes are consistent across every chart.** The sample's state-level
+  LGA bar carries a four-entry legend that colours "Very Low Coverage" salmon,
+  while its donut and its ward-level bars use salmon for "No Coverage" — the
+  same colour meaning two different things two charts apart. The generated deck
+  uses the five classes and one palette everywhere.
+- **The device-mix bars need input.** The sample charts Total Planned Teams
+  against eHA Phones and Vaccine Buddy. The GTS export records a device
+  identifier but not a device *type*, so that split cannot be derived. Supply it
+  with `--eha-phones`/`--vaccine-buddy` (or the app's fields); without it the
+  slide charts teams reported against teams pending and says on the slide that
+  it has done so.
+- **The coverage examples are real settlements from this campaign.** The
+  sample's four example screenshots are hand-made in QGIS over satellite
+  imagery, and are from a different state entirely (Gombe) — generic
+  illustrations. `pir_examples.py` picks one real settlement per coverage class
+  from the current run instead and draws its extent, its target-area grid, the
+  cells the tracks reached and the pings themselves. There is no satellite base:
+  the pipeline fetches no map tiles, and a report that fails on an offline
+  machine is worse than one drawn on a plain ground. Selection is deterministic
+  (the settlement closest to the median cell count for its class), so two runs
+  on the same data produce the same deck.
+- **Challenges and Recommendation are a data-driven draft, not prose.** The
+  sample's challenges are field-operations findings — trackers returned late,
+  weak network, devices not deployed in hard-to-reach wards — which no dataset
+  here records. What the data does show is *where tracking is absent*: teams
+  that returned nothing, wards with no tracks at all, settlements never reached,
+  settlements with no coordinates to track. Each item states the observation and
+  leaves the operational cause to the analyst; bracketed prompts mark what still
+  needs a human.
+
+### Layout
+
+Slides are located by **title**, never by slide number — twice: once on the
+unpacked package for the structural edits, and again on the loaded deck for the
+content edits. The second pass is not redundant. python-pptx renumbers slide
+parts when it opens a package, so a part-filename map built before the load
+points at the wrong slides afterwards; that is precisely how an early build came
+out with eleven LGA slides still carrying the sample's own Akwanga chart.
+
+Each content slide is cleared of the sample's pictures and text and rebuilt from
+the `BOX_*` constants at the top of `stage7_pir_report.py`, rather than reusing
+the sample's own shape positions (which were nudged by hand per slide — its
+twelve LGA slides have twelve slightly different donut boxes). Charts are
+contain-fitted into those boxes and **sized to each box's aspect ratio**, so a
+sixteen-ward bar chart fills its half-slide instead of being letterboxed into an
+unreadable sliver. `_overlap_report` runs at the end of every build and prints
+any colliding pair; the regression test asserts there are none.
+
+The LGA block grows and shrinks with the campaign: the template's LGA slides are
+reduced to one, which is then duplicated once per implementing LGA.
+
+### File size
+
+The sample deck is 30 MB, and about 25 MB of that is the charts, maps and
+photographs of the run it was exported from. Stage 7 replaces every one of them,
+but deleting a picture SHAPE leaves the image itself in the package — so without
+intervention the generated report would inherit all 25 MB, unreachable and
+carried in every copy anyone emails. `pptx_xml_utils.prune_unused_media` runs at
+the end of each build and drops the orphans; the run log says how many and how
+much. Branding referenced from a master, layout or theme is never touched.
+
+### No day anywhere in the final report
+
+The campaign day exists on the post-campaign path for exactly one reason: stage 2
+names its cumulative column `day_{N}_cumm` and chains a run onto the previous one
+by that number. That is an internal key. It should not reach anything a reader
+sees, and it was reaching four of them:
+
+| Where | Daily run | Post-campaign run |
+|---|---|---|
+| Output folder | `Kwara_Day1/` | `Kwara_PostCampaign/` |
+| Visitation CSV | `Kwara_day_1_settlement_visitation.csv` | `Kwara_postcampaign_settlement_visitation.csv` |
+| Maps, charts, geojson, gridded TA | `..._day_1.png` | `..._postcampaign.png` |
+| **Map titles, baked into the PNG** | `— Day 1` | `— {campaign name}` |
+
+That last row is the one that mattered most and the one a text check on the deck
+could never catch: the statewide coverage map is embedded on the report's Coverage
+Map slide, and its title is drawn into the image. A whole-campaign report was
+showing a map captioned "Day 1".
+
+`stage2_analysis.output_tag(day, analysis_type)` is the single source of the
+filename fragment, and `generate_maps(..., tag=, title_scope=)` carries it into
+stage 4. **Both default to the day**, so the daily ERM path is byte-for-byte
+unchanged — verified by `test_revised_template_slide_map.py`. Column names are
+deliberately untouched.
+
+### Downloading the report
+
+The result page offers the report FIRST, then the workbook, the visitation CSV
+and the maps+charts zip. Which file is "the report" depends on the analysis
+type, and that is worth stating because getting it wrong is silent:
+
+| Analysis type | Report offered | Written by |
+|---|---|---|
+| Daily ERM Analysis | `{State}_Day_{N}_Report.pptx` | stage 6, from the org template |
+| Post-Campaign Analysis | `{State}_Post_Implementation_Report.pptx` | stage 7, from the PIR template |
+
+The daily `.docx` draft from stage 5 is still written to the output folder but
+deliberately not offered — the branded deck is what goes out.
+
+The download button used to be gated on the results dict's `pptx` key, which
+only stage 6 sets. Stage 7 puts the PIR under `report`, so a finished
+post-campaign run built the deck and then showed no way to download it.
+`test_app_gallery.py` now asserts that both analysis types offer a presentable
+deck.
+
+A post-campaign run is also labelled by SCOPE rather than by day throughout the
+result page — "Whole campaign" instead of "Day 1", and
+`{State}_PostCampaign_maps_charts.zip` instead of `{State}_Day1_...`. The day
+number on that path exists only so stage 2 can name its cumulative column; it
+means nothing to a reader.
+
+### The charts folder has a subfolder now
+
+Stage 7 writes the PIR's figures to `charts/pir/`. The app's result page used to
+list the charts directory flat and hand every entry to `st.image`, which meant a
+post-campaign run ended in
+
+```
+MediaFileStorageError: Error opening '...\charts\pir'
+```
+
+— Streamlit trying to read a directory as an image. The same flat listing also
+wrote a bare directory entry into the maps+charts zip and left the PIR figures
+out of the download. Both UIs now share `image_files()` and `zip_tree()`, which
+filter to real image files and walk subfolders; the PIR figures get their own
+browsable section under the Charts tab rather than being stacked with the daily
+charts, since a post-campaign run produces two per LGA. `test_app_gallery.py`
+covers both.
+
+Anything else that adds a subfolder under `charts/` or `maps/` is now safe.
+
+### Testing it
+
+```bash
+python test_pir_report.py                       # finds the deck beside the pipeline
+python test_pir_report.py --template deck.pptx  # or point at one
+```
+
+It checks the section order, that one LGA slide exists per LGA, that **none of
+the sample's own content survives** (no "Nasarawa", no "Akwanga", none of its
+figures), that the coverage identity holds at state and LGA level, that nothing
+overlaps, and that changing the input data changes the deck.
 
 ## Daily vs cumulative — the rule
 
@@ -407,117 +685,118 @@ enough to keep one line, so the wording is preserved and short titles are
 untouched. The estimate is deliberately conservative: the deck is a Google
 Slides export and its title font is often substituted with a wider one.
 
-## Team Time Efficiency (Coverage x Time)
+## Team Time Efficiency (08:00-16:00 operational window)
 
-`team_efficiency.py` cross-references **how long a team was in the field**
-against **how much of its assigned gridded area it actually covered**, and
-flags the corner that matters operationally:
+`team_efficiency.py` measures each team's **actual GPS-recorded clock time**
+against a fixed operational window, 08:00-16:00 local time:
 
-> **Flagged = more than 2 hours in the field AND under 50% gridded area coverage.**
+> **Team Time Efficiency = Effective Operational Duration ÷ 480 minutes**
 
-Time on the ground only counts if it converts into coverage. A team at three
-hours and 20% is a different problem from a team at ten minutes and 20%, and
-needs a different conversation at the ERM.
+Effective Operational Duration is the minutes of continuous tracking (gaps over
+`MAX_GAP_MINUTES` = 15 min excluded — the same rule `team_daily_time.py` uses)
+that fall INSIDE the window; time tracked before 08:00 or after 16:00 earns
+nothing. A team that starts at 08:00 and tracks solidly to 16:00 scores 100%.
 
-### Why coverage is grid-cell weighted
+### Two duration figures, not one
 
-A ratio cannot be aggregated across settlements without its denominator.
-Averaging per-settlement percentages lets a four-cell settlement pull the mean
-as hard as a four-hundred-cell one. Team coverage is therefore
+`Total Recorded Duration` is the team's whole day, unwindowed. `Effective
+Operational Duration` is the same gap-summing, clipped to the window. A team
+can log hours of Total Recorded Duration entirely outside the window and still
+score 0% efficiency — reporting both numbers is what makes that visible rather
+than just asserted.
 
-```
-sum(cells visited across the team's settlements)
-------------------------------------------------
-sum(total cells across the team's settlements)
-```
+### Why raw track pings, not the visitation CSV
 
-the same construction stage 2 uses per settlement, one level up. Stage 2 keeps
-`Grid Cells`, `Grid Cells Visited` and `Daily Cells Visited` in the visitation
-CSV for exactly this purpose.
+Start/End time — and therefore everything downstream of it — only exists in
+the raw GPS ping stream. The settlement-level visitation CSV carries no
+timestamps at all, so this module reads the merged track export directly (the
+same file `team_daily_time.py` reads), not the settlement analysis.
 
-### Quadrants
+### Flags — reasons, not a score
 
-| Quadrant | Meaning |
+A team is **Flagged** the moment ANY rule below fires, and EVERY rule that
+fires is listed, joined with ` + `, so a reader never has to guess which
+problem is being reported:
+
+| Reason | Rule |
 |---|---|
-| **Long time, low coverage** | **the flag** — over 2 hrs, under 50% |
-| Short time, low coverage | little time, little covered |
-| Long time, good coverage | sustained productive work |
-| Short time, good coverage | efficient |
+| Late start | Start Time later than 08:00 + 30 min grace |
+| Early stop | End Time earlier than 16:00 − 30 min grace |
+| Insufficient operational time | Team Time Efficiency under 50% |
+| Excessive idle time | over 60 min of idle time inside the team's own working span |
+| Missing start time / Missing end time | team expected (per the settlement list roster) but produced zero pings on the reporting date |
+| Invalid timestamp | team present in the export, but none of its timestamps could be parsed |
+
+Missing and Invalid are deliberately distinct: one is "no data at all", the
+other is "data present but corrupt" — different problems for a supervisor to
+chase.
+
+Thresholds (`LATE_START_GRACE_MINUTES`, `EARLY_STOP_GRACE_MINUTES`,
+`MIN_EFFICIENCY_PCT`, `EXCESSIVE_IDLE_MINUTES`) are module constants, also
+exposed as `analyse()` keyword arguments — no established value existed for
+any of them anywhere in this pipeline before this module, so they are
+deliberately easy to retune per campaign without editing code. `MAX_GAP_MINUTES`
+is NOT reconfigurable here — it is imported from `team_daily_time.py`, so the
+two modules' notion of "was the tracker actually running" cannot diverge.
 
 ### The flagged-team follow-up list
 
-Every flagged team, both rules in one list, in the fields a supervisor needs to
-act — `Team`, `LGA`, `Time Spent (hrs)`, `% Grid Covered`, `Flag/Reason`, plus
-the cell counts behind the percentage so it can be audited.
+Every flagged team, every reason that applies, in the fields a supervisor needs
+to act — `State`, `LGA`, `Ward`, `Team`, `Team Date`, `Start Time`, `End Time`,
+`Total Recorded Duration (min)`, `Effective Operational Duration (min)`,
+`Team Time Efficiency (%)`, `Flag/Status`, `Reason for Flagging`.
 
 - workbook tab **`Flagged Teams`**
 - `flagged_teams_day_{N}.csv`, so the list can go to LGA supervisors without
   circulating the whole workbook
 
-It is not on the slide: at several hundred teams it cannot be shown without
-truncation, and the slide's job is the pattern, not the roster.
-
-**The two rules overlap** — a team can be over 2 hours with low coverage *and*
-stationary. It is listed **once** with both reasons joined by `+`, so the row
-count is the number of teams to follow up. The `meta` carries the split
-explicitly (`flagged_only`, `stationary_only`, `flagged_both`) so the chart,
-the table and the narration reconcile rather than quoting three different
-totals:
-
-| Where | Figure |
-|---|---|
-| Narration, first sentence | all long-time/low-coverage teams |
-| Narration, "a further N" | `stationary_only` — additional to the above, never double-counted |
-| Chart legend | the three series as drawn, summing to the team count |
-| Chart subtitle | flagged total, and how many meet both rules |
-| Table / CSV row count | `flagged_any` |
-
-On the chart the two categories are distinct in **colour and shape** — salmon
-circles for long-time/low-coverage, dark-red diamonds for stationary — because
-they occupy the same corner of the plane and colour alone would not separate
-them. A team meeting both is drawn as stationary, the sharper finding, so every
-team appears exactly once.
-
-All of it comes from one `team_efficiency.analyse` call on the state-filtered
-visitation CSV, so the chart, table, CSV and narration cannot disagree.
+All of it comes from one `team_efficiency.analyse` call on the merged track
+export, so the chart, table, CSV and narration cannot disagree.
 `test_flagged_teams.py` asserts that they don't.
 
-### Stationary teams — reported working, tracks say otherwise
+### Superseded design
 
-A separate and blunter question from the quadrants: not *was the time
-productive* but *did the team move at all*.
+This module used to cross-reference ping-count-derived field minutes against
+grid-weighted settlement coverage (flagged at over 2 hrs with under 50%
+coverage, or "stationary" — no more than one grid cell touched). That answered
+a different question — was time in the field productive — and worked from the
+settlement-level visitation CSV, which carries no clock times at all. It has
+been replaced outright by the clock-window metric above, per the decision to
+make this module's "Team Time Efficiency" the 08:00-16:00 metric everywhere
+it is reported, rather than keeping both analyses alongside each other.
 
-> **Stationary = at least 30 minutes of pings AND no more than one grid cell touched.**
+### Why the slide went missing, and why it now can't
 
-A team logging a substantial stretch of field time whose tracks never leave one
-or two grid cells has reported working while its GPS shows it in effectively
-one location — the device sat somewhere. That is a data-integrity finding, not
-an efficiency one, and it is the group an ERM most needs named.
+The analysis was never broken. It was lost twice, for two different reasons:
 
-The thresholds are conservative so the list stays defensible; a team with a
-single genuinely tiny settlement can land in it. The narration and the
-`Stationary Teams` workbook tab therefore word it as **flagged for supervisory
-verification**, not as a finding of fact. On the slide these teams lead the
-follow-up table and are marked with `*`, capped at half the rows so the
-long-time/low-coverage list is never squeezed out.
+1. **The superseded template had no slide for it.** The app was defaulting to
+   the 24-slide `organization's reporting template.pptx`, which has no Team Time
+   Efficiency slide at all. Fixed by pointing the app at the approved template,
+   where it is slide 5.
+2. **Stage 6 recomputed it, and deleted the slide when the recompute failed.**
+   `team_efficiency.analyse(visitation_csv, "cumulative")` is called TWICE per
+   run — once by stage 4 to draw `team_efficiency.png`, and again by stage 6 for
+   the narration. The slide was dropped purely on the second call's result, so a
+   settlement CSV that satisfied stage 4 but not stage 6, or any transient
+   failure, removed a slide whose chart was sitting finished in the charts
+   folder.
 
-### Relationship to the `CoveragexTime` draft
+The slide is now kept whenever there is **either** a recomputed figure **or** a
+rendered chart:
 
-This module replaces the earlier `CoveragexTime` script, which was reviewed and
-not integrated. Four faults made its numbers unusable for this question:
+| Figures | Chart | Result |
+|---|---|---|
+| yes | yes | slide with this run's numbers in the narration |
+| no | yes | slide **kept**, chart shown, narration states the methodology |
+| no | no | slide dropped, with the reason logged |
 
-| Draft | Effect |
-|---|---|
-| Summed `GPS Points Count` straight into bins labelled in **minutes** | Every duration halved — a 140-minute team binned as "1 – 2 Hrs" and escaped the >2 hr flag |
-| Flagged `"1 - 2 Hrs"` **and** `"> 2 Hrs"` | Caught teams between 1 and 2 hours, which the definition excludes |
-| Grouped by `LGA / Ward / Settlement` | No team column at all, so it could not name a team |
-| Coverage = visited **rows** ÷ total rows | Binary 0%/100% when the input is one row per settlement, so "Low Coverage" and "Partially Covered" were structurally empty |
+The middle row matters: it never quotes numbers that were not measured, and it
+never leaves the template's own sample figures under this run's chart. The
+methodology text names the same window and flag reasons the chart is built on,
+so the slide stays true. `test_revised_template_slide_map.py` asserts all
+three rows, including that the sample deck's `3,407` never appears.
 
-Its 4-band coverage scale also put 70–79% in `Partially Covered` where the ERM
-workbook says `Fully Covered`. This module uses one threshold (50%) rather than
-re-deriving bands, so it cannot disagree with anything.
-
-Outputs — workbook tabs `Team Time Efficiency`, `Teams Flagged (Time x Cov)`,
+Outputs — workbook tabs `Team Time Efficiency`, `Flagged Teams`,
 `Efficiency by LGA`, `Team Efficiency Data`; chart `charts/team_efficiency.png`;
 and the **Team Time Efficiency** slide, inserted after Time Spent Analysis.
 
@@ -525,11 +804,14 @@ Run standalone:
 
 ```bash
 python gts_pipeline/team_efficiency.py \
+    --tracks Day3_outputs/merged_tracks.csv \
     --visitation-csv Day3_outputs/Zamfara_day_3_settlement_visitation.csv \
-    --scope cumulative
+    --date latest
 ```
 
-Thresholds are `LONG_FIELD_MINUTES` and `LOW_COVERAGE` at the top of the module.
+Thresholds (`WINDOW_START_HOUR`/`WINDOW_END_HOUR`, `LATE_START_GRACE_MINUTES`,
+`EARLY_STOP_GRACE_MINUTES`, `MIN_EFFICIENCY_PCT`, `EXCESSIVE_IDLE_MINUTES`) are
+at the top of the module.
 
 ## Team performance & time-spent range
 
@@ -592,18 +874,315 @@ team's most common per-settlement band, and says so in the run log.
 
 ### Time Spent Analysis slide
 
-The PPTX template has no Time Spent slide of its own — stage 6 builds one by
-cloning the Team Deployment layout. That slide is two-part: the team time-range
-distribution on the left (with the `<12 mins` bar in red) and the
-under-12-minutes **LGAs** on the right, as a real PowerPoint table so the
-figures stay selectable. The narrative above carries both measures, each
-labelled.
+Slide 4 of the approved template. Two-part: the team time-range distribution on
+the left (with the `<12 mins` bar in red) and the under-12-minutes **LGAs** on
+the right, as a real PowerPoint table so the figures stay selectable. The
+narrative above carries both measures, each labelled.
 
-The table names the top LGAs by teams under twelve minutes and closes with a
-"+N more LGAs" row, followed by an italic caption. Ward-level detail stays in
-the workbook's `Teams Under 12 Mins` tab. When no team falls below twelve
-minutes the table is replaced by a line saying so, rather than leaving an empty
-column.
+The table names the top LGAs by teams under twelve minutes, adds each LGA's
+**median tracking sessions** as a third column, and closes with a "+N more
+LGAs" row followed by an italic caption. Ward-level detail stays in the
+workbook's `Teams Under 12 Mins` tab. When no team falls below twelve minutes
+the table is replaced by a line saying so, rather than leaving an empty column.
+
+The slide's narration is limited to two findings — minutes and sessions. The
+device-sharing count goes in the table caption instead, because the narration
+band is fixed at 0.75in and the type is shrunk to fit: at campaign scale a
+third sentence drops it from 10pt to 9.5, against a 9pt floor.
+
+### "Tracking Sessions by Team & Device" slide
+
+Two tables side by side, both ranked **shared devices first**:
+
+| Table | Columns | Ranked by |
+|---|---|---|
+| Teams | Team Code, IMEI, Tracks, Pings | on >1 device, then tracks, then pings |
+| Devices | IMEI, Teams, Tracks, Pings | team codes carried, then tracks, then pings |
+
+"Tracks" is the session count. The ranking is the design, not a detail: a slide
+shows the top of a list and nothing else, and a device transmitting under two
+team codes invalidates both teams' tracks — that outranks a team that merely
+had a choppy day. Full lists are in the workbook tabs the captions name.
+
+A team on several devices would produce a 50-character IMEI cell and wrap the
+row, so the slide shows the first IMEI in full — that is what identifies the
+handset to go and look at — followed by `+N`. The workbook carries the
+complete list.
+
+**This slide is not in the approved template.** It lives in
+`eHA_Revised_reporting_template_v2.pptx`, produced by
+`add_sessions_slide_to_template.py`, which clones the Team Time Efficiency
+slide so the branding, master and fonts are the template's own. Stage 6 finds
+the slide by its title, so:
+
+- v2 template + session data — slide is filled, everything below shifts down one
+- v2 template, no session data — slide is deleted, like the other conditionals
+- approved template — slide is absent, stage 6 says so and the rest of the deck
+  is unaffected
+
+That last case matters: an analyst still running last month's template must get
+a correct deck, not a broken one, because the pipeline gained a slide.
+
+### Template size — `slim_template.py`
+
+The templates are ~59 MB, and 54 MB of that is 27 embedded PNGs: the maps and
+charts from the run each was exported from. Stage 6 replaces every one of them
+on every build, so those bytes buy nothing at run time and cost a lot —
+GitHub's 50 MB warning threshold, a slow `safe_extract`/`rezip` on every build,
+and a test suite that took minutes.
+
+```bash
+python slim_template.py --template ../eHA_Revised_reporting_template.pptx
+```
+
+59 MB -> 5.4 MB. Media referenced from a slide **master, layout or theme** is
+left untouched — that is the eHA logo, footer bar and title artwork, which
+stage 6 never replaces. Only slide-referenced images are shrunk, to 2x2 pixels
+of the same format, so every relationship and shape geometry stays valid.
+`test_revised_template_slide_map.py` slims its working copies for this reason
+and passes identically against them, which is the evidence that a slimmed
+template and the original are interchangeable as far as the report is concerned.
+
+### Map legibility
+
+**Settlement points.** Both single-panel coverage maps drew at `markersize=9` —
+a ~3pt dot, visible in the PNG and effectively invisible projected, which is
+where these are read. Sized per role now, because a statewide map plots every
+settlement in the state and an LGA map a few hundred:
+
+| Map | Was | Now |
+|---|---|---|
+| State coverage | 9 | `SETTLEMENT_POINT_SIZE["statewide"]` = 26 |
+| LGA coverage (single panel) | 9 | `SETTLEMENT_POINT_SIZE["lga"]` = 55 |
+
+Kept semi-transparent with a darker hairline edge, so overlapping points read
+as a cluster rather than a blob and LGA/ward boundaries stay visible
+underneath. Labels are annotated after the points and carry white halos, so
+they always sit on top.
+
+The **side-by-side LGA pages** plot settlement *extents* — true-area polygons —
+not points, so the equivalent lever there is outline weight: `EXTENT_EDGE_WIDTH`
+0.3 → 1.1 and `EXTENT_OUTLINE_EDGE_WIDTH` → 1.3. Same fill, same palette, same
+position; the polygon simply occupies more visual space.
+
+### Implementation map
+
+Four faults, one of them the reason the others were invisible:
+
+- **`LGA.sqlite` has no state NAME column** — only `statecode`, which
+  `load_boundaries`' own "code" exclusion rejects. So its state filter silently
+  did nothing and the layer was all 774 LGAs in Nigeria. That was masked while
+  the implementing-LGA name filter narrowed it afterwards. The focal state's
+  LGAs are now selected **spatially** — representative point inside the state
+  polygon — which works whatever the layer calls its columns.
+- **Only implementing LGAs were labelled**, because the same filter was applied
+  before labelling. All LGAs in the focal state are labelled now.
+- **Zoomed to the implementing LGAs**, which cropped part of the state off the
+  page whenever a campaign did not cover all of it. Zooms to the focal state.
+- **LGA labels at a flat 11pt.** Now 17pt (≤16 LGAs) or 13pt, stepped down by
+  the square root of each LGA's area share with an 11pt floor — Zamfara's
+  north-east corner packs Kaura Namoda, Birnin Magaji/Kiyaw and Gusau into a
+  fraction of the page and collided at one flat size.
+
+Everything outside the focal state is washed with `OUTSIDE_MASK_FILL` at 0.72
+alpha, drawn above the fills and below every label: the state stands out, and
+neighbouring states keep enough shape to orient by.
+
+### Time Spent table — LGA-specific
+
+Every column is that LGA's own figure, not a state total repeated down the rows:
+
+| Column | Source |
+|---|---|
+| LGA | spatial attribution — the LGA the team's GPS points fall inside |
+| Teams | teams that transmitted from inside that LGA |
+| <12 min | of those, how many tracked under twelve minutes |
+| Median sessions | median separate tracking sessions per team, in that LGA |
+
+All three metrics are grouped through **one** team → LGA mapping. They used to
+come from two sources that spell the same place differently — the export says
+`Birnin Magaji-Kiyaw`, the boundary layer says `Birnin Magaji/Kiyaw` — so a
+table built from one and a column merged from the other silently dropped that
+row. The caption below stays italic and its device-sharing count comes from the
+same run as the table.
+
+### Time Spent — the hierarchy
+
+    selected day -> track -> state boundary overlay -> state of interest
+    -> unique team/device -> time spent
+
+Applied in that order, in `track_geo.py`, and nothing downstream can widen the
+population because nothing downstream re-reads the export.
+
+**State of interest comes from the planned settlements**, via
+`state_of_interest()` — not from the caller's argument and never from a state
+field in the track data. The state is a property of what was *planned*. A
+settlement list naming two states raises rather than picking one.
+
+**The overlay is spatial, always.** Each valid ping is a point intersected with
+`state.sqlite`. `test_day_state_scoping.py` writes every track row with a
+deliberately wrong state field and still gets the right answer — a field-based
+filter would return nothing at all.
+
+**The day filter is applied to the attributed pings**, so a previous day's
+teams cannot carry forward. `"latest"` resolves to the most recent date with
+tracks *inside the state of interest*, not the export's last date, which on a
+national file may belong to another state's campaign.
+
+**Minutes are measured from those pings only.** This is the part that changed:
+`team_daily_time.analyse` takes a scope of team CODES and then measures each
+team from every ping it sent that day, including pings outside the state. That
+gave the right population with potentially wrong durations. `track_geo.time_spent`
+measures from the attributed pings, and imports `MAX_GAP_MINUTES`,
+`SINGLE_PING_MINUTES` and `classify_minutes` from `team_daily_time` rather than
+restating them — the measurement is unchanged, its input is corrected.
+
+#### Validation
+
+`track_geo.validate()` writes the funnel and three assertions onto the
+workbook's Validation tab. It has to narrow at every step:
+
+```
+Rows read from the export             400,000
+Tracks before spatial overlay         310,664   valid fixes, usable coords, an identifier
+Tracks assigned to a state            309,480   inside any state polygon
+Tracks within the state of interest   120,016   inside Zamfara, all days
+Tracks on the selected day             79,945   day AND state — the analysis population
+Unique teams in the state that day        755
+Unique devices in the state that day      749
+Teams in the Time Spent Analysis          755
+No duplicate team counting                 OK
+No cross-day contamination                 OK
+No out-of-state tracks                     OK
+```
+
+Joining against **all 37 states** and then narrowing is deliberate: joining
+only to the focal polygon makes "assigned to a state" and "within the state of
+interest" the same number, and the validation stops being able to show how much
+of the export the overlay actually placed.
+
+### Spatial attribution — `track_geo.py`
+
+Every per-team figure used to be derived by matching STRINGS: the export's
+`NGA LGA 2024 Label` against the settlement list's `lga`, and its `Team Code`
+against the settlement list's `team_code`. Both matches fail, and both failed
+silently.
+
+**The team-code namespaces do not overlap.** The settlement list uses
+`GOR-025`, `TWD-202`; the export uses `ZAM/BUG/BEL/003`, `ZM/BKM/BKM/023`. Raw
+intersection: **0 of 3,067**. Reducing the export code to its last two segments
+recovers 11.7%. No string rule can join them.
+
+What that broke, measured on a real April 2026 Zamfara campaign:
+
+| Figure | Was | Is | Why it was wrong |
+|---|---|---|---|
+| Time Spent, teams | 4,213 | 689 | no state scope (157 LGAs, 16 states), grouped by (LGA, team) so boundary-crossers counted twice, and "no evidence of tracks" = every settlement-list team because none matched |
+| Teams Reported | 4,960 | 755 | same national aggregate, per-LGA `nunique` summed into the Grand Total |
+| Teams Pending | 0 (or = Deployed) | Deployed − Reported | clipped at 0 against an inflated Reported; equal to Deployed when nothing matched |
+
+`track_geo.py` stops asking the strings and asks the geometry: each valid ping
+is a point, intersected with `state.sqlite` and `LGA.sqlite`, and the team and
+device are attributed to where their points actually fell. It cross-checks —
+952 teams inside the Zamfara polygon against 951 carrying the export's own
+Zamfara label — which is what makes the spatial figure trustworthy rather than
+merely different. It runs in about a second per 300k points.
+
+**Counting rules.** State level counts each team once, however many LGAs it
+worked. LGA level counts a team in **every LGA it entered**, by choice: field
+teams do cross boundaries and an LGA table that hides that misdescribes where
+work happened. So the LGA column sums above the state total, by exactly the
+number of boundary-crossers, and each slide says so.
+
+**Devices with no team code.** 36,928 pings from 212 devices transmit with a
+valid IMEI and a blank Team Code. They are counted as devices, excluded from
+team figures, and reported on the Validation tab — which is why the device and
+team totals differ.
+
+The resulting in-state team-code set is passed to `team_daily_time` and
+`team_sessions` as their scope, so all three analyses describe the same
+population without re-reading the export.
+
+### Validation tab
+
+Every headline figure, with how it was derived, reconciled against the source
+export. Two inequalities are deliberate and labelled as such: the per-LGA
+columns sum above the state totals (boundary-crossers), and Teams Reported is
+not a subset of Teams Deployed (the namespaces don't overlap). A run is
+checkable rather than trustworthy-by-assertion:
+
+```
+Valid GPS points in state          79,945
+Unique team codes in state            755
+Unique devices (IMEI) in state        749
+Tracks (sessions) in state          1,683
+Sum of per-LGA team counts            781   = 755 + 26 boundary-crossers
+Devices with no team code               1
+Teams Deployed / Reported / Pending  3,067 / 755 / 2,312
+```
+
+### Slides are resolved by title, not by file number
+
+`stage6_pptx_report.py` used to address slides by part-file name
+(`slide11.xml`). **python-pptx renumbers every slide part when it saves**, so
+the moment a slide is inserted into the template and the file is written back,
+the numbering is renormalised and every constant after the insertion point
+addresses a different slide. Adding three slides moved `slide11.xml` from
+"first LGA map" to "Cumulative Settlements Coverage".
+
+`_resolve_slide_map()` now resolves each role by matching the slide's title,
+falling back to the positional constant with a warning. The `SLIDE_*` constants
+are fallbacks, not the primary route, and the failure class is gone.
+
+### Tracking sessions — how many sittings the day arrived in
+
+`team_sessions.py` answers: **in how many separate sittings did each team
+transmit, and on how many devices?**
+
+"Number of tracks" is ambiguous in a GTS export, because `Track ID` is issued
+PER PING — a million-row export carries very nearly a million distinct Track
+IDs, so counting them measures data volume and nothing an analyst can act on. A
+session is the useful unit: a run of consecutive pings with no gap long enough
+to mean the device stopped.
+
+**The gap rule is not a new threshold.** `team_daily_time` already defines "not
+tracking" as a gap longer than `MAX_GAP_MINUTES` (15) and excludes such gaps
+from time spent. `team_sessions` imports that same constant as its session
+boundary, which makes the two analyses two views of one segmentation:
+
+    minutes tracked  =  the total length of a team's sessions
+    sessions         =  how many pieces that total arrived in
+
+They cannot contradict each other, and `test_team_sessions.py` asserts the two
+constants have not drifted apart. Checked on a real April 2026 Zamfara export
+(valid fixes only): consecutive pings arrive 2.0 minutes apart at the median
+and 5.6 at the 95th percentile, so 15 minutes sits well clear of normal
+reporting; the 99th percentile is 17.8 minutes, which is the switched-off tail
+this is meant to catch.
+
+**Rows flagged `Valid = 0` are excluded** before sessions are cut, so a burst
+of rejected fixes cannot manufacture a session or bridge a real break. That was
+about 23% of rows in a recent export. Note the flag arrives as a *string* in
+some chunk files and an integer in others — `track_columns.valid_mask` handles
+both, which is why nothing in the pipeline compares it to `0` directly.
+
+**Fragmented** means `FRAGMENTED_SESSIONS` (4) or more sessions on the day. Set
+from the same export: median 2 sessions, 75th percentile 3, 90th percentile 4,
+so 4 flags the top ~14% — a follow-up list a supervisor can act on. Three flags
+28% and stops being a list.
+
+**Devices.** Sessions are cut per team and, separately, per device, then
+crossed: one team on several devices in a day, and — the more serious — one
+device transmitting under several team codes, which means the tracker was
+passed around and neither team's track can be attributed with confidence.
+
+Outputs — workbook tabs `Tracking Sessions` (per-LGA summary and a fragmented
+teams chart), `Session Data (Team)` and `Session Data (Device)`, plus the
+sessions column and narration clause on the Time Spent slide. Runnable alone:
+
+```bash
+python team_sessions.py --tracks merged_tracks.csv --visitation-csv Day1_out/..._settlement_visitation.csv
+```
 
 ### Time Spent Analysis is measured from the track timestamps
 
@@ -776,7 +1355,7 @@ Three fixed bounds keep the rest honest:
 |---|---|---|
 | `NARR_TOP_IN` | 1.08in | clears the title placeholder, whose box runs to 1.06in |
 | `CONTENT_TOP_IN` | 1.95in | common top for charts and tables, so the deck reads as one layout |
-| `EFF_CONTENT_TOP_IN` | 2.42in | Team Time Efficiency carries two findings and needs a deeper narration band; its narration is also capped at 12pt so it is compact by construction |
+| `EFF_CONTENT_TOP_IN` | 2.05in | Team Time Efficiency's narration can run to two findings and needs a deeper band; its narration is also capped at 12pt so it is compact by construction |
 | `CONTENT_BOTTOM_IN` | 5.18in | the master's footer band starts at 5.25in; anything crossing it prints over the URL and copyright line |
 
 The glyph-width and line-height ratios are set for the **substituted** font, not
@@ -851,12 +1430,13 @@ A narration that needs an extra line now pushes the content down instead of
 colliding with it, whatever the wording or the substituted font turns out to
 be. The run log prints when this happens.
 
-On the **Team Time Efficiency** chart the flagged team codes are stacked in a
-reserved right-hand gutter with thin leader lines back to their points. Named
-in place, they collided with each other, with the points they name and with the
-legend — flagged teams cluster in one corner by definition. The legend sits
-below the x-axis label for the same reason: `lower right` put it squarely in
-the flagged corner, the one region of that chart the reader must be able to see.
+The **Team Time Efficiency** chart is two panels, not one, because the two
+things a reader needs are different shapes: the left panel is the state-wide
+efficiency distribution across the same four coverage-style bands the rest of
+the deck already uses; the right panel names the worst-performing FLAGGED
+teams individually, each bar labelled with its efficiency and reason inline —
+a list to act on, capped at `MAX_LISTED_TEAMS` (18) since a campaign can run
+hundreds of teams, too many for one bar each.
 
 ## Side-by-side LGA maps
 

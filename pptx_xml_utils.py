@@ -41,6 +41,88 @@ def rezip(src_dir, out_path):
                 zf.write(f, f.relative_to(src_dir).as_posix())
 
 
+def prune_unused_media(pptx_path, out_path=None) -> tuple[int, int]:
+    """Drop image parts that no shape references any more. Returns (dropped, bytes).
+
+    Why this is needed
+    ------------------
+    Deleting a picture SHAPE through python-pptx removes it from the slide XML
+    but leaves the slide's relationship to the image, and the image itself, in
+    the package. A report built by filling a template therefore ships every
+    chart, map and photograph of the run the template was exported from — inert,
+    unreachable, and the overwhelming majority of the file. The
+    "Post Implementation Report 2026" deck is 30 MB, of which about 25 MB is
+    exactly that; a generated report inherits all of it.
+
+    What it does
+    ------------
+    For every part with a `.rels`, the part's own XML is scanned for the
+    relationship ids it actually uses (`r:embed`, `r:link`, `r:id`). A
+    relationship is removed only when BOTH its id is unused in that XML AND its
+    target is a media file — so slide-to-layout, layout-to-master and
+    slide-to-notes relationships, which live only in the .rels and are never
+    named in the XML, are untouched. Media no surviving relationship points at
+    is then dropped from the package.
+
+    Rewrites `pptx_path` in place unless `out_path` is given.
+    """
+    src = Path(pptx_path)
+    dest = Path(out_path) if out_path else src.with_suffix(".pruned.pptx")
+
+    rel_re = re.compile(r'<Relationship\b[^>]*/>')
+    id_re = re.compile(r'\bId="([^"]+)"')
+    target_re = re.compile(r'\bTarget="([^"]+)"')
+    used_re = re.compile(r'r:(?:embed|link|id)="(rId\d+)"')
+
+    with zipfile.ZipFile(src) as zin:
+        infos = zin.infolist()
+        names = zin.namelist()
+        data = {n: zin.read(n) for n in names}
+
+    rewritten: dict[str, bytes] = {}
+    kept_media: set[str] = set()
+    for name in names:
+        if not (name.endswith(".rels") and "/_rels/" in name):
+            continue
+        owner = name.replace("/_rels/", "/").removesuffix(".rels")
+        owner_xml = data.get(owner, b"").decode("utf-8", "ignore")
+        used_ids = set(used_re.findall(owner_xml))
+        text = data[name].decode("utf-8")
+        out_parts, changed = [], False
+        pos = 0
+        for m in rel_re.finditer(text):
+            out_parts.append(text[pos:m.start()])
+            pos = m.end()
+            rel = m.group(0)
+            target = target_re.search(rel)
+            rid = id_re.search(rel)
+            is_media = bool(target and "media/" in target.group(1))
+            if is_media and rid and rid.group(1) not in used_ids:
+                changed = True          # orphaned image relationship — drop it
+                continue
+            if is_media:
+                # resolve "../media/imageN.png" against the owner's folder
+                kept_media.add(target.group(1).split("/")[-1])
+            out_parts.append(rel)
+        out_parts.append(text[pos:])
+        if changed:
+            rewritten[name] = "".join(out_parts).encode("utf-8")
+
+    dropped, freed = 0, 0
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in infos:
+            name = info.filename
+            if name.startswith("ppt/media/") and name.split("/")[-1] not in kept_media:
+                dropped += 1
+                freed += len(data[name])
+                continue
+            zout.writestr(info, rewritten.get(name, data[name]))
+
+    if out_path is None:
+        dest.replace(src)
+    return dropped, freed
+
+
 def _get_next_slide_number(slides_dir: Path) -> int:
     existing = [int(m.group(1)) for f in slides_dir.glob("slide*.xml")
                 if (m := re.match(r"slide(\d+)\.xml", f.name))]

@@ -58,7 +58,8 @@ matplotlib.use("Agg")
 import matplotlib.patheffects
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from matplotlib.patches import Patch, Polygon, Rectangle
+from matplotlib.patches import Patch
+from matplotlib.patches import Rectangle as MplRectangle, Polygon, Rectangle
 import pandas as pd
 import geopandas as gpd
 
@@ -80,9 +81,32 @@ BOUNDARY_COLOR = "#887f6c"         # template LGA outline
 LGA_FILL = "#f2efe9"
 WARD_COLOR = "#65406d"             # template ward outline (purple)
 STATE_OUTLINE = "#a48227"
-IMPLEMENTING_FILL = "#f3e3e3"      # implementing LGAs (template pink)
+# Implementation map, matching the reference sheet.
+#
+# THE SHADING MARKS WHAT IS *NOT* IN THE CAMPAIGN. The implementing LGAs are
+# left white — they are the subject and the eye should read them as the plain
+# ground — and the LGAs left out are hatched pink so the gap is what stands
+# out. This is the reverse of what this module used to do, which shaded the
+# implementing LGAs and left the excluded ones white; the legend then said
+# "Implementing LGAs" next to the pink, and a reader scanning for coverage saw
+# the campaign as the exception rather than the rule.
+IMPLEMENTING_FILL = "#ffffff"          # in the campaign — plain white
+NON_IMPLEMENTING_FILL = "#fbeaea"      # left out — pale pink...
+NON_IMPLEMENTING_HATCH = "xx"          # ...and hatched, so it reads in print too
+# Matplotlib's default hatch stroke is heavy enough that a cross-hatch reads as
+# a solid block at map scale, which buries the LGA names sitting on it. The
+# reference's hatch is a fine mesh you see through.
+NON_IMPLEMENTING_HATCH_LW = 0.35
+NON_IMPLEMENTING_EDGE = "#d9a3a3"
 FOCAL_FILL = "#ffffff"
 ADJOINING_FILL = "#d9d9d9"
+# LGA outlines inside the focal state: thin and dark, so the state reads as one
+# body divided up rather than as a set of separate shapes.
+IMPLEMENTATION_LGA_EDGE = "#3a3a3a"
+IMPLEMENTATION_STATE_EDGE = "#000000"
+IMPLEMENTATION_LGA_LABEL_COLOR = "#099D00"   # bold green, sampled from the reference sheet
+IMPLEMENTATION_STATE_LABEL_COLOR = "#4a4a4a"
+IMPLEMENTATION_FRAME_EDGE = "#333333"
 
 # --------------------------------------------------------------------------- #
 # Side-by-side LGA panels — colours taken from the LGA project's layer styles.
@@ -104,7 +128,65 @@ DUAL_FOCAL_OUTLINE = "#000000"
 DUAL_ADJOINING_FILL = "#d0d0ce"
 DUAL_ADJOINING_OUTLINE = "#000000"
 DUAL_ADJOINING_LABEL = "#4a4a4a"       # adjoining LGA names, for geographic context
+# The FOCAL LGA's own name. Larger, black and haloed harder than its
+# neighbours', so the LGA the page is about is identifiable without reading the
+# title — the heavy outline alone says "something here is different", not
+# "THIS one". The multiplier is against the adjoining label size, so the
+# hierarchy survives whatever page size the template asks for.
+DUAL_FOCAL_LABEL = "#000000"
+DUAL_FOCAL_LABEL_SCALE = 1.65
 DUAL_WARD_OUTLINE = "#000000"          # ward boundaries, dotted black
+
+# Implementation map. LGA names are sized to how many have to fit: Zamfara has
+# 14, Kano has 44, and a size that suits one collides on the other. Both are
+# well above the previous flat 11pt, which was unreadable at slide scale.
+IMPLEMENTATION_LGA_LABEL_PT_FEW = 17.0    # <= 16 LGAs
+IMPLEMENTATION_LGA_LABEL_PT_MANY = 13.0   # more than that
+# Floor for the area-based step-down below. Under this a name stops being
+# readable on a projected slide, which defeats the purpose of enlarging them.
+IMPLEMENTATION_LGA_LABEL_PT_MIN = 12.0
+# Floor on the area-based step-down as a FRACTION of the base size, so the
+# smallest LGA's name is never more than this much smaller than the largest's.
+IMPLEMENTATION_LGA_LABEL_MIN_RATIO = 0.80
+# Adjoining STATE names. Deliberately close to the LGA size — on the reference
+# they read as peers, distinguished by colour and the underline, not by scale.
+IMPLEMENTATION_STATE_LABEL_PT = 13.0
+
+# Everything outside the focal state is washed with this, so the state stands
+# out while its neighbours still give enough shape to orient by. A light warm
+# grey at partial opacity subdues without erasing — a solid fill would remove
+# the geographic context the map is there to provide.
+OUTSIDE_MASK_FILL = "#e8e8e6"
+OUTSIDE_MASK_ALPHA = 0.72
+Z_OUTSIDE_MASK = 3       # above the state/LGA fills, below every label
+
+# Settlement point size on the single-panel coverage maps, in matplotlib's
+# markersize units (points squared, so area — doubling the number is roughly a
+# 1.4x increase in diameter).
+#
+# Both maps used to draw at 9, which is a ~3pt dot: visible when you zoom into
+# the PNG, and effectively invisible on a projected slide, which is where these
+# are actually read. The two roles are sized separately because they carry very
+# different densities — a statewide map plots every settlement in the state,
+# an LGA map a few hundred — so one size cannot serve both without either
+# vanishing on the LGA page or merging into a solid mass on the state page.
+#
+# Kept semi-transparent with a darker hairline edge so that overlapping points
+# read as a cluster of dots rather than one blob, and so LGA and ward
+# boundaries stay visible underneath. Labels are annotated after the points and
+# carry white halos, so they always sit on top.
+SETTLEMENT_POINT_SIZE = {"statewide": 26.0, "lga": 55.0}
+SETTLEMENT_POINT_ALPHA = {"statewide": 0.80, "lga": 0.85}
+SETTLEMENT_POINT_EDGE_WIDTH = 0.35
+
+# The side-by-side LGA pages do not plot settlement POINTS — they plot
+# settlement EXTENTS, which are true-area polygons. So the equivalent of
+# "make the points bigger" there is the outline weight: a hairline edge at
+# 0.3pt left each extent reading as a faint speck on an A0 page, and thickening
+# it makes the same polygon occupy more visual space without changing its
+# colour, its position or its area. Fill and palette are untouched.
+EXTENT_EDGE_WIDTH = 1.1            # filled extents, status panel
+EXTENT_OUTLINE_EDGE_WIDTH = 1.3    # outline-only extents over the coverage grid
 
 # Padding around the focal LGA, as a fraction of its extent. The LGA template's
 # own atlas margin is 0.02, which crops to the LGA itself and leaves no
@@ -746,6 +828,11 @@ def _legend_role(label: str) -> str | None:
         return "not_visited"
     if "visit" in l:
         return "visited"
+    # "Non-Implementing" must be tested BEFORE "Implementing" — it contains it,
+    # so the looser test would claim the shaded entry and give it the white
+    # swatch, labelling the excluded LGAs as the campaign's.
+    if "implement" in l and ("non" in l or "not" in l):
+        return "non_implementing"
     if "implementing" in l or "implement" in l:
         return "implementing"
     if "adjoining" in l and "lga" in l:
@@ -938,14 +1025,20 @@ def render_map_figure(boundaries: gpd.GeoDataFrame, points: gpd.GeoDataFrame, ti
                             path_effects=[matplotlib.patheffects.withStroke(
                                 linewidth=2.2, foreground="white")])
 
+    point_role = "lga" if is_lga else "statewide"
+    point_size = SETTLEMENT_POINT_SIZE[point_role]
+    point_alpha = SETTLEMENT_POINT_ALPHA[point_role]
+
     nv = points[points["status"] == "Not Visited"]
     v = points[points["status"] == "Visited"]
     if len(nv):
-        nv.plot(ax=ax, color=NOT_VISITED_COLOR, markersize=9, alpha=0.85,
-                edgecolor="#8c2b29", linewidth=0.2)
+        nv.plot(ax=ax, color=NOT_VISITED_COLOR, markersize=point_size,
+                alpha=point_alpha, edgecolor="#8c2b29",
+                linewidth=SETTLEMENT_POINT_EDGE_WIDTH)
     if len(v):
-        v.plot(ax=ax, color=VISITED_COLOR, markersize=9, alpha=0.9,
-               edgecolor="#0e5c26", linewidth=0.2)
+        v.plot(ax=ax, color=VISITED_COLOR, markersize=point_size,
+               alpha=point_alpha, edgecolor="#0e5c26",
+               linewidth=SETTLEMENT_POINT_EDGE_WIDTH)
 
     if lga_label_col:
         for _, row in boundaries.iterrows():
@@ -1056,6 +1149,35 @@ def _label_adjoining(ax, adjoining, label_col, font_size):
                         linewidth=2.6, foreground="white")])
 
 
+def _label_focal(ax, focal, name: str, font_size: float):
+    """Name the focal LGA, in the weight that says it is the subject.
+
+    Placed at the focal polygon's representative point and drawn above every
+    other label, with a thicker halo so it stays readable over ward boundaries
+    and settlement data underneath.
+
+    The name is passed in rather than read off a column: the focal frame and the
+    surrounding-LGA frame come from different layers and need not share a column
+    name, and a label that silently vanished because two layers disagreed about
+    spelling would be worse than no feature at all.
+    """
+    if focal is None or not len(focal) or not name:
+        return
+    try:
+        geom = focal.geometry.union_all()
+    except Exception:
+        geom = focal.geometry.iloc[0]
+    if geom is None or geom.is_empty:
+        return
+    ax.annotate(_wrap(str(name).replace("_", " "), 14),
+                (geom.representative_point().x, geom.representative_point().y),
+                ha="center", va="center",
+                fontsize=font_size, weight="bold", color=DUAL_FOCAL_LABEL,
+                zorder=Z_LABEL + 2,
+                path_effects=[matplotlib.patheffects.withStroke(
+                    linewidth=5.0, foreground="white")])
+
+
 def _draw_panel_context(ax, focal, adjoining, wards, ward_label_col, ward_label_size):
     """The boundary furniture both panels share, in the project's draw order.
 
@@ -1149,17 +1271,18 @@ def render_dual_lga_figure(spec: LayoutSpec, lga_name: str,
             _plot_by_status(
                 ax, extents,
                 {"facecolor": "none", "edgecolor": EXTENT_VISITED_OUTLINE,
-                 "linewidth": 0.5},
+                 "linewidth": EXTENT_OUTLINE_EDGE_WIDTH},
                 {"facecolor": "none", "edgecolor": EXTENT_NOT_VISITED_OUTLINE,
-                 "linewidth": 0.4},
+                 "linewidth": EXTENT_OUTLINE_EDGE_WIDTH},
                 Z_EXTENT_OUTLINE)
         else:
             visited_n, not_visited_n = _plot_by_status(
                 ax, extents,
                 {"facecolor": EXTENT_VISITED_FILL, "edgecolor": EXTENT_VISITED_FILL,
-                 "linewidth": 0.3},
+                 "linewidth": EXTENT_EDGE_WIDTH},
                 {"facecolor": EXTENT_NOT_VISITED_FILL,
-                 "edgecolor": EXTENT_NOT_VISITED_FILL, "linewidth": 0.3},
+                 "edgecolor": EXTENT_NOT_VISITED_FILL,
+                 "linewidth": EXTENT_EDGE_WIDTH},
                 Z_DATA)
 
         if focal is not None and len(focal):
@@ -1170,6 +1293,10 @@ def render_dual_lga_figure(spec: LayoutSpec, lga_name: str,
         # LGAs have to be on the page before they can be labelled
         _set_extent(ax, focal, LGA_CONTEXT_MARGIN)
         _label_adjoining(ax, adjoining, adjoining_label_col, adjoining_label_size)
+        # After the neighbours, so the focal name is drawn over anything that
+        # would otherwise cross it.
+        _label_focal(ax, focal, lga_name,
+                     adjoining_label_size * DUAL_FOCAL_LABEL_SCALE)
 
         # ---- panel furniture, all from the template's own items
         label = spec.label_for(frame.panel)
@@ -1239,6 +1366,39 @@ def render_dual_lga_figure(spec: LayoutSpec, lga_name: str,
     return fig
 
 
+def _underline_labels(fig, ax, artists, color: str, linewidth: float = 1.4) -> None:
+    """Draw a rule under each text artist, matplotlib having no underline.
+
+    The reference sheet underlines every adjoining-state name, which is what
+    separates a state label from an LGA label at a glance. Matplotlib text has
+    no underline property and the mathtext `\\underline` route swaps the font,
+    so the rule is measured off the rendered text instead: one canvas draw, then
+    a line under each artist's own extent.
+
+    Best-effort by design — a backend that cannot report a text extent costs the
+    map its underlines, not the map.
+    """
+    if not artists:
+        return
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+    except Exception:
+        return
+    for art in artists:
+        try:
+            bb = art.get_window_extent(renderer=renderer)
+            inv = ax.transData.inverted()
+            (x0, y0), (x1, _) = inv.transform((bb.x0, bb.y0)), inv.transform((bb.x1, bb.y1))
+            pad = (bb.height * 0.16)
+            (_, yp) = inv.transform((bb.x0, bb.y0 - pad))
+            ax.plot([x0, x1], [yp, yp], color=color, linewidth=linewidth,
+                    solid_capstyle="butt", zorder=Z_LABEL + 1,
+                    path_effects=[matplotlib.patheffects.withStroke(
+                        linewidth=linewidth + 2.0, foreground="white")])
+        except Exception:
+            continue
+
 def implementation_map(state_file: str, lga_file: str, state_name: str,
                        implementing_lgas: list[str], out_png: str,
                        logo: str | None = None, title: str | None = None,
@@ -1250,33 +1410,121 @@ def implementation_map(state_file: str, lga_file: str, state_name: str,
     states = read_boundary_file(state_file)
     st_col = next(c for c in states.columns if "state" in c.lower() and "code" not in c.lower())
     focal = states[states[st_col].astype(str).str.strip().str.title() == state_name.title()]
-    lga = load_boundaries(lga_file, state_name, implementing_lgas)
+
+    # EVERY LGA in the focal state, not only the implementing ones. Passing
+    # `implementing_lgas` here filtered the layer down, so the map outlined and
+    # labelled only the campaign LGAs and the rest of the state was a blank
+    # shape with no names on it. The implementing subset is still needed for
+    # the shading, so it is selected from the full set below.
+    lga = load_boundaries(lga_file, state_name)
     lga_name_col = next((c for c in lga.columns if "lga" in c.lower()
                          and "code" not in c.lower()), lga.columns[0])
-    wanted = {str(n).strip().title() for n in implementing_lgas}
-    lga_names_t = lga[lga_name_col].astype(str).str.strip().str.title()
+
+    # `load_boundaries` filters by a state NAME column, and LGA.sqlite has only
+    # `statecode` — which its own "code" exclusion rejects — so nothing is
+    # filtered and the layer is all 774 LGAs in Nigeria. That was harmless
+    # while the implementing-LGA name filter narrowed it afterwards; now that
+    # every LGA in the layer gets a label, it put neighbouring states' LGA
+    # names across the whole page in the same weight as the focal state's.
+    #
+    # Selected spatially instead: an LGA belongs to the focal state if its
+    # representative point lies inside the state polygon. That works whatever
+    # the boundary layer calls its columns.
+    if len(focal):
+        from shapely.ops import unary_union as _uu
+        try:
+            focal_geom = _uu(focal.geometry.values)
+            inside = lga[lga.geometry.representative_point().within(focal_geom)]
+            if len(inside):
+                lga = inside
+            else:
+                print(f"  WARNING: no LGA centroid falls inside {state_name} — "
+                      f"labelling the whole LGA layer")
+        except Exception as exc:
+            print(f"  could not select the focal state's LGAs spatially ({exc})")
+    # Normalised the same way every other module in this pipeline compares LGA
+    # names (see `stage3_erm_workbook.norm_lga`, `team_efficiency._norm_place`):
+    # underscores collapsed to spaces before title-casing. Without this, a
+    # boundary layer that spells a name "Ilorin_East" never matches
+    # `implementing_lgas`'s "Ilorin East", every LGA falls into `non_impl`, and
+    # the whole state renders hatched instead of white — this is the exact
+    # failure a mismatched name produces, so the normalisation has to match.
+    def _norm_lga_name(s: pd.Series) -> pd.Series:
+        return (s.astype(str).str.replace("_", " ", regex=False)
+                .str.replace(r"\s+", " ", regex=True).str.strip().str.title())
+
+    wanted = set(_norm_lga_name(pd.Series(list(implementing_lgas))))
+    lga_names_t = _norm_lga_name(lga[lga_name_col])
     impl = lga[lga_names_t.isin(wanted)] if wanted else lga
+    # The LGAs left OUT of the campaign are what gets shaded — see
+    # NON_IMPLEMENTING_FILL. With no implementing list every LGA is in scope, so
+    # nothing is shaded.
+    non_impl = lga[~lga_names_t.isin(wanted)] if wanted else lga.iloc[0:0]
 
     fig, ax = _new_figure(spec)
 
-    states.plot(ax=ax, facecolor=ADJOINING_FILL, edgecolor="#999999", linewidth=0.7)
-    focal.plot(ax=ax, facecolor=FOCAL_FILL, edgecolor="#555555", linewidth=1.4)
-    lga.plot(ax=ax, facecolor=FOCAL_FILL, edgecolor="#8a8a8a", linewidth=0.7)
-    if len(impl):
-        impl.plot(ax=ax, facecolor=IMPLEMENTING_FILL, edgecolor="#8a8a8a", linewidth=0.7)
+    # Adjoining states: one flat grey, their internal divisions not drawn. They
+    # are context, and drawing their LGA boundaries competes with the focal
+    # state's own.
+    states.plot(ax=ax, facecolor=ADJOINING_FILL, edgecolor="#8f8f8f", linewidth=0.7)
+    focal.plot(ax=ax, facecolor=FOCAL_FILL, edgecolor=IMPLEMENTATION_STATE_EDGE,
+               linewidth=1.6)
+    lga.plot(ax=ax, facecolor=IMPLEMENTING_FILL, edgecolor=IMPLEMENTATION_LGA_EDGE,
+             linewidth=0.6)
+    if len(non_impl):
+        with matplotlib.rc_context({"hatch.linewidth": NON_IMPLEMENTING_HATCH_LW}):
+            non_impl.plot(ax=ax, facecolor=NON_IMPLEMENTING_FILL,
+                          edgecolor=NON_IMPLEMENTING_EDGE, linewidth=0.9,
+                          hatch=NON_IMPLEMENTING_HATCH)
+    # The state outline again, on top, so the campaign boundary stays the
+    # strongest line on the page after the LGA fills have been laid down.
+    focal.plot(ax=ax, facecolor="none", edgecolor=IMPLEMENTATION_STATE_EDGE,
+               linewidth=1.8, zorder=Z_OUTSIDE_MASK + 1)
 
-    for _, row in lga.iterrows():
-        pt = row.geometry.representative_point()
-        ax.annotate(_wrap(row[lga_name_col], 12), (pt.x, pt.y), ha="center", va="center",
-                    fontsize=11, weight="bold", color="#222222",
-                    path_effects=[matplotlib.patheffects.withStroke(linewidth=2,
-                                                                    foreground="white")])
-
-    # Zoom to the implementing LGAs rather than the whole state so they fill the
-    # frame. The margin still admits a band of adjoining territory for context;
-    # fall back to the focal state when nothing is flagged as implementing.
-    _set_extent(ax, impl if len(impl) else focal, IMPLEMENTATION_ZOOM_MARGIN)
+    # Zoom to the FOCAL STATE, not to the implementing LGAs. Zooming to the
+    # subset cropped part of the state off the page whenever the campaign did
+    # not cover all of it, which is most campaigns — the state has to be whole
+    # for the map to be read as a state map.
+    _set_extent(ax, focal if len(focal) else lga, IMPLEMENTATION_ZOOM_MARGIN)
     view = ax.viewLim
+
+    # No wash over the surroundings. The adjoining states are already a single
+    # flat grey, which separates them from the white focal state on its own; a
+    # translucent sheet on top only muddied both and made the state names sitting
+    # on it harder to read.
+
+    # LGA names, sized to the number that have to fit. A state with 27 LGAs
+    # cannot carry the same type as one with 14 without the labels colliding,
+    # so the size steps down as the count rises rather than being fixed.
+    lga_label_pt = (IMPLEMENTATION_LGA_LABEL_PT_FEW if len(lga) <= 16
+                    else IMPLEMENTATION_LGA_LABEL_PT_MANY)
+    # A small LGA gets a smaller label. Zamfara's north-east corner packs
+    # Kaura Namoda, Birnin Magaji/Kiyaw and Gusau into a fraction of the page,
+    # and at one flat size their names run into each other; scaling by the
+    # square root of the area share keeps the big LGAs at full size while the
+    # crowded ones step down just enough to separate. The floor keeps every
+    # name readable at slide scale, which is the point of the exercise.
+    areas = lga.geometry.area
+    median_area = float(areas.median()) if len(areas) else 0.0
+    for _, row in lga.iterrows():
+        if row.geometry is None or row.geometry.is_empty:
+            continue
+        size = lga_label_pt
+        if median_area > 0:
+            # The reference sheet sets every LGA name at ONE size, and a run of
+            # names at visibly different sizes reads as a hierarchy that is not
+            # there — a small LGA is not a less important one. The step-down is
+            # kept only as collision insurance for genuinely cramped corners, so
+            # the ratio is clamped: at most a fifth smaller, never larger.
+            ratio = (float(row.geometry.area) / median_area) ** 0.5
+            ratio = max(IMPLEMENTATION_LGA_LABEL_MIN_RATIO, min(1.0, ratio))
+            size = max(IMPLEMENTATION_LGA_LABEL_PT_MIN, lga_label_pt * ratio)
+        pt = row.geometry.representative_point()
+        ax.annotate(_wrap(row[lga_name_col], 12), (pt.x, pt.y), ha="center",
+                    va="center", fontsize=size, weight="bold",
+                    color=IMPLEMENTATION_LGA_LABEL_COLOR, zorder=Z_LABEL,
+                    path_effects=[matplotlib.patheffects.withStroke(
+                        linewidth=2.6, foreground="white")])
 
     # Label each adjoining state inside the sliver of it that is actually on
     # screen. Its true centroid is usually outside the zoomed view, so the
@@ -1285,6 +1533,7 @@ def implementation_map(state_file: str, lga_file: str, state_name: str,
     from shapely.geometry import box as _bbox
     view_poly = _bbox(view.x0, view.y0, view.x1, view.y1)
     min_visible_area = view_poly.area * 0.004
+    state_labels = []
     for _, row in states.iterrows():
         nm = str(row[st_col]).strip().title()
         if nm == state_name.title():
@@ -1299,29 +1548,57 @@ def implementation_map(state_file: str, lga_file: str, state_name: str,
         if visible.is_empty or visible.area < min_visible_area:
             continue
         pt = visible.representative_point()
-        # adjoining names sit on flat grey fill, so they need weight and a halo
-        # to stay legible — the previous light grey italic washed out
-        ax.annotate(nm.upper(), (pt.x, pt.y), ha="center", va="center",
-                    fontsize=13, color="#3f3f3f", weight="bold", style="italic",
-                    zorder=6,
-                    path_effects=[matplotlib.patheffects.withStroke(
-                        linewidth=3.0, foreground="white")])
+        # Title Case, bold and underlined, as on the reference sheet — the
+        # underline is what tells a reader at a glance that this is a STATE and
+        # not one of the focal state's LGAs. (The previous uppercase italic read
+        # as a third category and washed out against the grey.)
+        state_labels.append(ax.annotate(
+            nm, (pt.x, pt.y), ha="center", va="center",
+            fontsize=IMPLEMENTATION_STATE_LABEL_PT, weight="bold",
+            color=IMPLEMENTATION_STATE_LABEL_COLOR, zorder=Z_LABEL,
+            path_effects=[matplotlib.patheffects.withStroke(
+                linewidth=3.0, foreground="white")]))
     ax.set_axis_off()
+    _underline_labels(fig, ax, state_labels, IMPLEMENTATION_STATE_LABEL_COLOR)
+    # A thin rule around the drawn area, as on the reference.
+    ax.add_patch(MplRectangle((0, 0), 1, 1, transform=ax.transAxes, fill=False,
+                              edgecolor=IMPLEMENTATION_FRAME_EDGE, linewidth=1.2,
+                              zorder=Z_LABEL + 2, clip_on=False))
     # place the legend, north arrow, scale bar and logo against the drawn map
     # area instead of the paper edge, overlaying the adjoining states
     frame_box = _data_box(fig, ax)
 
+    impl_patch = Patch(facecolor=IMPLEMENTING_FILL, edgecolor=IMPLEMENTATION_LGA_EDGE)
+    non_impl_patch = Patch(facecolor=NON_IMPLEMENTING_FILL,
+                           edgecolor=NON_IMPLEMENTING_EDGE,
+                           hatch=NON_IMPLEMENTING_HATCH,
+                           linewidth=0.8)
     handles_by_role = {
-        "implementing": Patch(facecolor=IMPLEMENTING_FILL, edgecolor="#8a8a8a"),
-        "focal": Patch(facecolor=FOCAL_FILL, edgecolor="#555555"),
-        "adjoining_state": Patch(facecolor=ADJOINING_FILL, edgecolor="#999999"),
-        "adjoining_lga": Patch(facecolor=FOCAL_FILL, edgecolor="#8a8a8a"),
+        "implementing": impl_patch,
+        "non_implementing": non_impl_patch,
+        "focal": impl_patch,
+        "adjoining_state": Patch(facecolor=ADJOINING_FILL, edgecolor="#8f8f8f"),
+        "adjoining_lga": non_impl_patch,
     }
-    fallback = [Patch(facecolor=IMPLEMENTING_FILL, edgecolor="#8a8a8a", label="Implementing LGAs"),
-                Patch(facecolor=FOCAL_FILL, edgecolor="#555555", label="Focal State"),
-                Patch(facecolor=ADJOINING_FILL, edgecolor="#999999", label="Adjoining State")]
+    fallback = [Patch(facecolor=IMPLEMENTING_FILL, edgecolor=IMPLEMENTATION_LGA_EDGE,
+                      label="Implementing LGA"),
+                Patch(facecolor=NON_IMPLEMENTING_FILL, edgecolor=NON_IMPLEMENTING_EDGE,
+                      hatch=NON_IMPLEMENTING_HATCH, label="Non-Implementing LGA"),
+                Patch(facecolor=ADJOINING_FILL, edgecolor="#8f8f8f",
+                      label="Adjoining State")]
+    # The QGIS template's legend predates the non-implementing class and carries
+    # only "Implementing LGAs" and "Adjoining States". Drawing the hatched class
+    # on the map and leaving it out of the key is worse than either — so that one
+    # template entry is expanded into both, keeping the template's own position,
+    # font and ordering.
+    expand = {}
+    if len(non_impl):
+        expand["implementing"] = [(impl_patch, "Implementing LGA"),
+                                  (non_impl_patch, "Non-Implementing LGA")]
+    # No "Legend" header on the reference sheet — just the two rows directly.
     _draw_legend(fig, spec, handles_by_role, fallback_handles=fallback,
-                 subtitle="Legend", fallback_ncol=3, box=frame_box)
+                 subtitle="", fallback_ncol=3, box=frame_box,
+                 expand_roles=expand)
     _draw_title(fig, spec, title or f"{state_name} State GTS Implementation Map",
                 default_size=19)
     _draw_north_arrow(fig, spec, ax, box=frame_box)
@@ -1341,8 +1618,16 @@ def generate_maps(visitation_csv: str, cum_col: str, lga_file: str, state_name: 
                   dpi: int | None = None,
                   voronoi_file: str | None = None,
                   gridded_ta_file: str | None = None,
-                  state_logo: str | None = None) -> list[str]:
+                  state_logo: str | None = None,
+                  tag: str | None = None,
+                  title_scope: str | None = None) -> list[str]:
     """Statewide map plus one map per LGA.
+
+    `tag` names the output files and `title_scope` is the phrase printed after
+    the em-dash in each map's title. Both default to this run's day, so the
+    daily path is unchanged. The post-campaign path passes the campaign instead:
+    a map titled "— Day 1" inside a whole-campaign final report is wrong, and it
+    is baked into the PNG where no text check on the deck can see it.
 
     The LGA maps are the side-by-side status/coverage pages when a two-map
     template is available *and* both polygon inputs were supplied; otherwise
@@ -1350,6 +1635,8 @@ def generate_maps(visitation_csv: str, cum_col: str, lga_file: str, state_name: 
     filenames are unchanged (`{State}_{LGA}_day_{N}.png`), so the report and
     PPTX stages keep matching them the same way.
     """
+    tag = tag or f"day_{day}"
+    title_scope = title_scope or f"Day {day}"
     if template_dirs:
         set_template_dirs(template_dirs)
     if dpi:
@@ -1408,10 +1695,10 @@ def generate_maps(visitation_csv: str, cum_col: str, lga_file: str, state_name: 
 
     outputs = []
     fig = render_map_figure(boundaries, points,
-                            f"{state_name} State Settlement Visitation Coverage — Day {day}",
+                            f"{state_name} State Settlement Visitation Coverage — {title_scope}",
                             lga_label_col=lga_name_col, lga_label_size=15, logo=logo,
                             role="statewide", spec=statewide_spec)
-    p = os.path.join(output_folder, f"{state_name}_statewide_day_{day}.png")
+    p = os.path.join(output_folder, f"{state_name}_statewide_{tag}.png")
     fig.savefig(p, dpi=_figure_dpi(statewide_spec), facecolor="white")
     plt.close(fig)
     outputs.append(p)
@@ -1447,10 +1734,10 @@ def generate_maps(visitation_csv: str, cum_col: str, lga_file: str, state_name: 
                          == lga_name.strip().title()] if pts_lga else gpd.clip(points, b)
             if not len(pts):
                 pts = gpd.clip(points, b)
-            fig = render_map_figure(b, pts, f"{lga_name} LGA Settlement Visitation — Day {day}",
+            fig = render_map_figure(b, pts, f"{lga_name} LGA Settlement Visitation — {title_scope}",
                                     wards=w, ward_label_col=ward_name_col, logo=logo,
                                     is_lga=True, role="lga", spec=single_panel_spec)
-        p = os.path.join(output_folder, f"{state_name}_{safe_name(lga_name)}_day_{day}.png")
+        p = os.path.join(output_folder, f"{state_name}_{safe_name(lga_name)}_{tag}.png")
         fig.savefig(p, dpi=_figure_dpi(lga_output_spec), facecolor="white")
         plt.close(fig)
         outputs.append(p)

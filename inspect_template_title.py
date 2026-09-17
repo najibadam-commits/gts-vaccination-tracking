@@ -4,7 +4,7 @@ Answers "why didn't the title change?" without running the whole pipeline.
 Prints every shape on slide 1, says which one stage 6 resolves as the title,
 and — with --write — produces a one-slide proof file you can open.
 
-    python inspect_template_title.py "organization's reporting template.pptx"
+    python inspect_template_title.py ../eHA_Revised_reporting_template.pptx
     python inspect_template_title.py my_template.pptx --state Kano --write
 
 If the resolved title is "(none)", stage 6 cannot find a title shape on that

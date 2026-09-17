@@ -5,6 +5,7 @@ The analyst uploads the planned settlements first; the app detects the
 state, LGAs and wards from it, then runs the full daily pipeline.
 """
 import os
+import re
 import sys
 import io
 import base64
@@ -36,7 +37,7 @@ BASE_DIR = os.path.dirname(APP_DIR)
 from cloud_limits import banner as cloud_banner, check_inputs, map_dpi_override
 from qpt_layout import discover_templates
 from stage1_merge import merge_tracks
-from stage2_analysis import run_analysis
+from stage2_analysis import run_analysis, output_tag
 from stage3_erm_workbook import build_workbook_from_agg, load_tracks_teams
 from stage4_maps import (generate_maps, implementation_map, set_dpi_override,
                          set_template_dirs)
@@ -61,13 +62,34 @@ DEFAULT_STATE = _find_default("state.sqlite")
 DEFAULT_LOGO = _find_default("eha_logo.png")
 
 
+# The approved reporting deck stage 6 is wired to. Named explicitly rather
+# than discovered: the superseded `organization's reporting template.pptx`
+# also matches a "*template*.pptx" search AND sits in APP_DIR, which is
+# scanned first — so the old name-agnostic version of this function silently
+# returned the 24-slide deck and every report was built against the wrong
+# slide map, whatever template the team had actually agreed on.
+PPTX_TEMPLATE_NAME = "eHA_Revised_reporting_template.pptx"
+
+
 def _find_default_pptx():
-    """Looks for any .pptx template file next to the app or one level up."""
-    for folder in (APP_DIR, BASE_DIR, os.getcwd()):
-        if not os.path.isdir(folder):
-            continue
-        for fn in os.listdir(folder):
+    """Locate the approved eHA reporting template.
+
+    Matched on exact filename first, across the app folder, one level up and
+    the cwd. Only when that file exists nowhere does this fall back to a
+    generic "*template*.pptx" search, and the fallback is sorted so the pick
+    is at least deterministic instead of filesystem-order dependent — and it
+    says so on stdout, because a silent fallback is what caused the drift.
+    """
+    folders = [f for f in (APP_DIR, BASE_DIR, os.getcwd()) if os.path.isdir(f)]
+    for folder in folders:
+        cand = os.path.join(folder, PPTX_TEMPLATE_NAME)
+        if os.path.isfile(cand):
+            return cand
+    for folder in folders:
+        for fn in sorted(os.listdir(folder)):
             if fn.lower().endswith(".pptx") and "template" in fn.lower():
+                print(f"WARNING: {PPTX_TEMPLATE_NAME} not found — falling back "
+                      f"to {fn!r}, whose slide order stage 6 does not know.")
                 return os.path.join(folder, fn)
     return None
 
@@ -76,16 +98,15 @@ DEFAULT_PPTX_TEMPLATE = _find_default_pptx()
 
 
 def _find_default_pir_template():
-    """Looks for the 'Post Implementation Report sample' file next to the app
-    or one level up, so it's applied automatically for Post-Campaign Analysis."""
-    for folder in (APP_DIR, BASE_DIR, os.getcwd()):
-        if not os.path.isdir(folder):
-            continue
-        for fn in sorted(os.listdir(folder)):
-            low = fn.lower()
-            if "post implementation report" in low and "sample" in low:
-                return os.path.join(folder, fn)
-    return None
+    """Locate the Post Implementation Report DECK stage 7 fills.
+
+    Delegated to `stage7_pir_report.find_default_pir_template` so the app and
+    the CLI runners cannot disagree about which file is the template. Stage 7
+    now builds the PIR by filling that deck, so only a .pptx qualifies — an
+    older .pdf/.docx "sample" sitting in the folder is no longer picked up.
+    """
+    from stage7_pir_report import find_default_pir_template
+    return find_default_pir_template(APP_DIR, BASE_DIR, os.getcwd())
 
 
 DEFAULT_PIR_TEMPLATE = _find_default_pir_template()
@@ -256,6 +277,79 @@ st.markdown(
 )
 
 
+def day_from_prev_visitation(path: str | None) -> int:
+    """The campaign day a run should be, given the PREVIOUS run's output.
+
+    Stage 2 names its cumulative column `day_{N}_cumm` and chains a run onto the
+    prior one by that number, so the day is not free-form — it is one more than
+    whatever the uploaded visitation CSV last recorded. Reading it back means the
+    Post-Campaign path never has to ask: the analyst uploads the campaign's
+    tracks and, if they have it, the prior visitation CSV, and the day follows.
+
+    Returns 1 when there is nothing to chain onto, which is what a single
+    whole-campaign run (all days' tracks in one go) should be.
+    """
+    if not path or not os.path.exists(path):
+        return 1
+    try:
+        header = pd.read_csv(path, nrows=0).columns
+    except Exception:
+        return 1
+    days = [int(m.group(1)) for c in header
+            if (m := re.match(r"day_(\d+)_cumm$", str(c).strip(), re.I))]
+    return max(days) + 1 if days else 1
+
+def _scope_label(r: dict) -> str:
+    """How to describe what a finished run covers.
+
+    A post-campaign run has no meaningful campaign day — the number exists only
+    so stage 2 can name its cumulative column — so showing "Day 1" beside a
+    whole-campaign report is worse than showing nothing.
+    """
+    if r.get("analysis_type") == "post_campaign":
+        return "Whole campaign"
+    return f"Day {r['day']}"
+
+
+def _scope_slug(r: dict) -> str:
+    """The same thing, as a filename fragment."""
+    if r.get("analysis_type") == "post_campaign":
+        return "PostCampaign"
+    return f"Day{r['day']}"
+
+def image_files(folder: str) -> list[str]:
+    """Image FILES directly in `folder`, sorted. Subdirectories excluded.
+
+    Stage 7 writes the Post-Implementation Report's figures to a `pir`
+    subfolder of the charts directory. A plain `os.listdir` hands that
+    directory to `st.image`, which fails with a MediaFileStorageError — so the
+    listing is filtered to real image files everywhere it is used, and the
+    subfolder is browsed separately.
+    """
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    return sorted(n for n in names
+                  if n.lower().endswith((".png", ".jpg", ".jpeg"))
+                  and os.path.isfile(os.path.join(folder, n)))
+
+
+def zip_tree(zf, folder: str) -> None:
+    """Add `folder` and everything under it to an open zip, paths preserved.
+
+    Walks rather than listing: the charts folder now has a `pir` subfolder, and
+    a flat listing silently wrote a bare directory entry for it and left the
+    Post-Implementation Report's figures out of the download.
+    """
+    root = os.path.basename(folder.rstrip("/\\"))
+    for dirpath, _dirs, files in os.walk(folder):
+        rel = os.path.relpath(dirpath, folder)
+        prefix = root if rel == "." else f"{root}/" + rel.replace(os.sep, "/")
+        for fn in files:
+            # zip entries are always forward-slashed, whatever the host OS
+            zf.write(os.path.join(dirpath, fn), f"{prefix}/{fn}")
+
 def save_upload(uploaded, folder, name=None):
     path = os.path.join(folder, name or uploaded.name)
     with open(path, "wb") as f:
@@ -341,20 +435,39 @@ with st.container(border=True):
 
 # ------------------------------------------------ 5. campaign day
 with st.container(border=True):
-    step_card("📅", "Campaign Day")
-    c1, c2, c3 = st.columns(3)
-    day = c1.number_input("Day of campaign", min_value=1, max_value=14, value=1)
-    mopup = c2.checkbox("Mop-up day")
-    prev_file = c3.file_uploader("Previous day's visitation CSV (for day 2+)", type=["csv"])
+    if analysis_type == "daily":
+        step_card("📅", "Campaign Day")
+        c1, c2, c3 = st.columns(3)
+        day = c1.number_input("Day of campaign", min_value=1, max_value=14, value=1)
+        mopup = c2.checkbox("Mop-up day")
+        prev_file = c3.file_uploader("Previous day's visitation CSV (for day 2+)",
+                                     type=["csv"])
 
-    teams_deployed_in = st.number_input(
-        "Total teams deployed (optional — overrides the count derived from the planned-"
-        "settlement list's team codes)",
-        min_value=0, value=0, step=1,
-        help="Leave at 0 to use the settlement list's own team-code count. When set, this drives "
-        "Teams Reported (from the tracks received), Teams Pending (Deployed − Reported), and "
-        "Reporting % throughout the workbook and report.")
-    teams_deployed = int(teams_deployed_in) if teams_deployed_in else None
+        teams_deployed_in = st.number_input(
+            "Total teams deployed (optional — overrides the count derived from the planned-"
+            "settlement list's team codes)",
+            min_value=0, value=0, step=1,
+            help="Leave at 0 to use the settlement list's own team-code count. When set, this drives "
+            "Teams Reported (from the tracks received), Teams Pending (Deployed − Reported), and "
+            "Reporting % throughout the workbook and report.")
+        teams_deployed = int(teams_deployed_in) if teams_deployed_in else None
+    else:
+        # Which day is which, and how many teams were deployed, are things you
+        # act on DURING implementation — they belong to the daily ERM analysis.
+        # The Post-Implementation Report is whole-campaign by construction and
+        # reports neither, so neither is asked for here. The day number stage 2
+        # still needs internally is read back off the chained visitation CSV.
+        step_card("📅", "Prior Visitation (optional)",
+                 "The Post-Implementation Report covers the whole campaign, so there is no "
+                 "campaign day or team-deployment figure to enter. Upload every campaign "
+                 "day's tracks in step 3 and the coverage below is cumulative across all "
+                 "of them. If you only have the final day's tracks, attach the previous "
+                 "run's visitation CSV here to carry the earlier days forward.")
+        prev_file = st.file_uploader("Previous visitation CSV (optional)", type=["csv"],
+                                     key="prev_pc")
+        mopup = False
+        teams_deployed = None
+        day = None          # resolved from prev_file once it has been saved
 
 # ------------------------------------------------ 6. boundary layers
 with st.container(border=True):
@@ -435,22 +548,22 @@ with st.container(border=True):
         pptx_template_path = save_upload(pptx_up, WORK) if pptx_up else DEFAULT_PPTX_TEMPLATE
     else:
         step_card("📄", "Reporting Template",
-                 "The Post-Implementation Report (PIR) is built in the style of the organization's "
-                 "Post Implementation Report sample — applied automatically, no action needed.")
+                 "The Post-Implementation Report (PIR) is built by filling the organization's "
+                 "\"Post Implementation Report\" deck — applied automatically, no action needed.")
         pir_template_path = DEFAULT_PIR_TEMPLATE
         if DEFAULT_PIR_TEMPLATE:
             st.success(f"Reporting template: found `{os.path.basename(DEFAULT_PIR_TEMPLATE)}` — "
                        "applied automatically.")
-            use_other_pir = st.checkbox("Use a different PIR sample/template", key="chk_pir")
+            use_other_pir = st.checkbox("Use a different PIR template deck", key="chk_pir")
             if use_other_pir:
-                pir_up = st.file_uploader("Upload PIR sample/template", type=["pdf", "docx"], key="pir_up")
+                pir_up = st.file_uploader("Upload PIR template (.pptx)", type=["pptx"], key="pir_up")
                 pir_template_path = save_upload(pir_up, WORK) if pir_up else DEFAULT_PIR_TEMPLATE
         else:
-            st.warning("No Post Implementation Report sample found next to the app — the PIR will "
-                      "use the built-in default layout.")
-            pir_up = st.file_uploader("Upload PIR sample/template (optional)", type=["pdf", "docx"],
-                                      key="pir_up")
+            st.error("No Post Implementation Report **.pptx** found next to the app. The PIR is "
+                     "built by filling that deck, so one must be supplied.")
+            pir_up = st.file_uploader("Upload PIR template (.pptx)", type=["pptx"], key="pir_up")
             pir_template_path = save_upload(pir_up, WORK) if pir_up else None
+
 
     campaign_name = st.text_input("Campaign title (shown on the report's title page/slide)",
                                   value="Vaccination Tracking Report")
@@ -512,7 +625,12 @@ with st.sidebar:
     st.caption("eHealth Africa · GTS Automation")
 
 if run:
-    out_dir = os.path.join(WORK, f"{state_name}_Day{day}")
+    # Named for what the run COVERS. A post-campaign run's folder called
+    # "Kwara_Day1" labels the final report's own outputs with a day number that
+    # exists only so stage 2 can name its cumulative column.
+    _is_pc = analysis_type == "post_campaign"
+    out_dir = os.path.join(WORK, f"{state_name}_PostCampaign" if _is_pc
+                           else f"{state_name}_Day{day}")
     os.makedirs(out_dir, exist_ok=True)
     tracks_dir = os.path.join(WORK, "tracks_in")
     os.makedirs(tracks_dir, exist_ok=True)
@@ -521,6 +639,11 @@ if run:
     ta_path = save_upload(ta_file, WORK)
     vor_path = save_upload(vor_file, WORK)
     prev_path = save_upload(prev_file, WORK, "prev_dip.csv") if prev_file else None
+    if day is None:
+        # Post-Campaign path — the day is not asked for; it follows from
+        # whatever the chained visitation CSV last recorded. See
+        # `day_from_prev_visitation`.
+        day = day_from_prev_visitation(prev_path)
 
 
     progress = st.progress(0, "Starting…")
@@ -533,10 +656,12 @@ if run:
             progress.progress(20, "Tracks merged")
 
             st.write("**Stage 2** — settlement visitation analysis…")
+            file_tag = output_tag(int(day), analysis_type)
             result = run_analysis(sett_path, merged, ta_path, vor_path, state_name,
                                   int(day), mopup, out_dir, prev_dip_file=prev_path,
                                   track_date=None if analysis_type == "post_campaign"
-                                             else "latest")
+                                             else "latest",
+                                  tag=file_tag)
             cum_col = result["cum_col"]
             visitation_csv = result["visitation_csv"]
             progress.progress(50, "Analysis complete")
@@ -546,13 +671,14 @@ if run:
             is_pc = analysis_type == "post_campaign"
             wb_path = os.path.join(out_dir, f"{state_name}_PostCampaign_ERM_Analysis.xlsx") if is_pc \
                 else os.path.join(out_dir, f"{state_name}_Day_{day}_Vaccination_Tracking_ERM_Analysis.xlsx")
-            deploy_csv = os.path.join(out_dir, f"team_deploy_day_{day}.csv")
-            time_csv = os.path.join(out_dir, f"time_spent_day_{day}.csv")
+            deploy_csv = os.path.join(out_dir, f"team_deploy_{file_tag}.csv")
+            time_csv = os.path.join(out_dir, f"time_spent_{file_tag}.csv")
             build_workbook_from_agg(visitation_csv, teams, cum_col, int(day), state_name,
                                     wb_path, deploy_csv=deploy_csv, time_csv=time_csv,
-                                    flagged_csv=os.path.join(out_dir, f"flagged_teams_day_{day}.csv"),
+                                    flagged_csv=os.path.join(out_dir, f"flagged_teams_{file_tag}.csv"),
                                     analysis_type=analysis_type,
-                                    teams_deployed_total=teams_deployed)
+                                    teams_deployed_total=teams_deployed,
+                                    tracks_file=merged)
             progress.progress(65, "Workbook ready")
 
             st.write("**Stage 4** — charts & maps…")
@@ -587,18 +713,35 @@ if run:
                           maps_dir, logo_path, ward_boundary_path,
                           voronoi_file=vor_path,
                           gridded_ta_file=result.get("ta_parquet"),
-                          state_logo=state_logo_path)
+                          state_logo=state_logo_path,
+                          tag=file_tag,
+                          # The map title is baked into the PNG, so a
+                          # post-campaign map titled "— Day 1" carries the day
+                          # into the final report where no check on the deck's
+                          # text can see it.
+                          title_scope=campaign_name if _is_pc else None)
             progress.progress(85, "Maps ready")
 
             pptx_path = None
             if analysis_type == "post_campaign":
                 st.write("**Stage 7** — Post-Implementation Report (PIR)…")
-                report_path = os.path.join(out_dir, f"{state_name}_Post_Implementation_Report.docx")
-                build_pir_report(state_name, visitation_csv, cum_col, deploy_csv, time_csv,
+                report_path = os.path.join(out_dir, f"{state_name}_Post_Implementation_Report.pptx")
+                # No deploy CSV and no device mix: team deployment is an
+                # implementation-monitoring measure, kept in the workbook's Team
+                # Deploy-Report tab but not reported after the campaign.
+                build_pir_report(state_name, visitation_csv, cum_col, time_csv,
                                  maps_dir, report_path, logo_path,
                                  campaign_name=campaign_name, charts_folder=charts_dir,
-                                 state_logo=state_logo_path, template_path=pir_template_path)
-                report_label = "📄 Post-Implementation Report (.docx)"
+                                 state_logo=state_logo_path, template_path=pir_template_path,
+                                 voronoi_file=vor_path,
+                                 gridded_ta_file=result.get("ta_parquet"),
+                                 tracks_file=merged)
+                report_label = "📊 Post-Implementation Report (.pptx)"
+                # Stage 7 explains every placeholder it leaves and every
+                # indicator it could not compute on stdout, which never reaches
+                # the browser. Surface it here instead.
+                for _note in getattr(build_pir_report, "notes", []) or []:
+                    st.warning(_note, icon="⚠️")
             else:
                 st.write("**Stage 5** — report draft…")
                 report_path = os.path.join(out_dir, f"{state_name}_Day_{day}_Daily_Tracking_Report_DRAFT.docx")
@@ -614,14 +757,22 @@ if run:
                                       cum_col, deploy_csv, time_csv, maps_dir, charts_dir,
                                       pptx_path, campaign_name=campaign_name,
                                       state_logo_path=state_logo_path,
-                                      tracks_file=merged)
+                                      tracks_file=merged,
+                                      track_date=result.get("track_date"))
+                    # Stage 6 explains every slide it drops on stdout, which
+                    # never reaches the browser. Anything it wants the analyst
+                    # to know is shown here instead — a slide missing from the
+                    # deck for a stated reason is only useful if the reason is
+                    # visible to the person holding the deck.
+                    for _note in getattr(build_pptx_report, "notes", []) or []:
+                        st.warning(_note, icon="⚠️")
             progress.progress(100, "Done")
         log.update(label="Pipeline complete ✅", state="complete")
         st.session_state.results = {
             "out_dir": out_dir, "report": report_path, "report_label": report_label,
             "workbook": wb_path, "visitation": visitation_csv, "maps": maps_dir,
             "charts": charts_dir, "state": state_name, "day": int(day), "pptx": pptx_path,
-            "cum_col": cum_col,
+            "cum_col": cum_col, "analysis_type": analysis_type, "tag": file_tag,
         }
     except Exception as e:
         log.update(label="Pipeline failed ❌", state="error")
@@ -633,7 +784,7 @@ if "results" in st.session_state:
 
     st.markdown(
         f'<div class="gts-result-banner"><div>'
-        f'<p class="gts-result-title">📦 Results — {r["state"]} · Day {r["day"]}</p>'
+        f'<p class="gts-result-title">📦 Results — {r["state"]} · {_scope_label(r)}</p>'
         f'<p class="gts-result-subtitle">Pipeline complete — download the report, workbook and '
         f'supporting files below</p></div></div>',
         unsafe_allow_html=True,
@@ -649,46 +800,74 @@ if "results" in st.session_state:
                 pct = visited / total * 100 if total else 0
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("State", r["state"])
-                m2.metric("Campaign Day", r["day"])
+                m2.metric("Scope", _scope_label(r))
                 m3.metric("Settlements Visited", f"{visited:,}")
                 m4.metric("Coverage", f"{pct:.1f}%")
         except Exception:
             pass
 
         st.markdown("⬇️ **Downloads**")
-        # The .docx draft is still produced by stage 5 but is no longer offered
-        # here — the branded .pptx is the report that goes out.
-        cols = st.columns(4 if r.get("pptx") else 3)
-        with open(r["workbook"], "rb") as f:
-            cols[0].download_button("📊 ERM workbook (.xlsx)", f.read(),
-                                    os.path.basename(r["workbook"]), use_container_width=True)
-        with open(r["visitation"], "rb") as f:
-            cols[1].download_button("🗂️ Visitation CSV", f.read(),
-                                    os.path.basename(r["visitation"]), use_container_width=True)
+        # THE REPORT COMES FIRST — it is what the run is for.
+        #
+        # Which file that is depends on the analysis type, and getting it from
+        # the wrong key is how a finished post-campaign run ended up with no
+        # report to download at all: stage 6 writes the daily org-template deck
+        # to `pptx`, while stage 7 writes the Post-Implementation Report to
+        # `report`, and this block used to offer only `pptx`. The daily .docx
+        # draft from stage 5 stays unoffered — the branded deck is what goes out
+        # — but a report that IS a deck is always offered, whichever key holds it.
+        downloads = []
+        if r.get("pptx"):
+            downloads.append(("📽️ Report (.pptx, org template)", r["pptx"]))
+        elif str(r.get("report", "")).lower().endswith(".pptx"):
+            downloads.append((r.get("report_label") or "📊 Report (.pptx)", r["report"]))
+        downloads.append(("📊 ERM workbook (.xlsx)", r["workbook"]))
+        downloads.append(("🗂️ Visitation CSV", r["visitation"]))
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             for folder in (r["maps"], r["charts"]):
-                for fn in os.listdir(folder):
-                    z.write(os.path.join(folder, fn),
-                            os.path.join(os.path.basename(folder), fn))
-        cols[2].download_button("🗺️ Maps + charts (.zip)", buf.getvalue(),
-                                f"{r['state']}_Day{r['day']}_maps_charts.zip", use_container_width=True)
+                zip_tree(z, folder)
 
-        if r.get("pptx"):
-            with open(r["pptx"], "rb") as f:
-                cols[3].download_button("📽️ Report (.pptx, org template)", f.read(),
-                                        os.path.basename(r["pptx"]), use_container_width=True)
+        cols = st.columns(len(downloads) + 1)
+        for col, (label, path) in zip(cols, downloads):
+            with open(path, "rb") as f:
+                col.download_button(label, f.read(), os.path.basename(path),
+                                    use_container_width=True)
+        cols[-1].download_button(
+            "🗺️ Maps + charts (.zip)", buf.getvalue(),
+            f"{r['state']}_{_scope_slug(r)}_maps_charts.zip",
+            use_container_width=True)
 
         tab1, tab2 = st.tabs(["🗺️ Maps", "📊 Charts"])
         with tab1:
-            pngs = sorted(os.listdir(r["maps"]))
-            # default the preview to the State Visitation Coverage map rather
-            # than whichever LGA happens to sort first
-            statewide_name = f"{r['state']}_statewide_day_{r['day']}.png"
-            default_idx = pngs.index(statewide_name) if statewide_name in pngs else 0
-            sel = st.selectbox("Preview map", pngs, index=default_idx)
-            st.image(os.path.join(r["maps"], sel), use_container_width=True)
+            pngs = image_files(r["maps"])
+            if not pngs:
+                # An empty selectbox returns None, and st.image(join(dir, None))
+                # raises rather than showing "no maps" — say it plainly instead.
+                st.info("No maps were produced for this run.")
+            else:
+                # default the preview to the State Visitation Coverage map rather
+                # than whichever LGA happens to sort first
+                statewide_name = f"{r['state']}_statewide_{r.get('tag') or ('day_%s' % r['day'])}.png"
+                default_idx = pngs.index(statewide_name) if statewide_name in pngs else 0
+                sel = st.selectbox("Preview map", pngs, index=default_idx)
+                st.image(os.path.join(r["maps"], sel), use_container_width=True)
         with tab2:
-            for fn in sorted(os.listdir(r["charts"])):
+            for fn in image_files(r["charts"]):
                 st.image(os.path.join(r["charts"], fn), use_container_width=True)
+
+            # Stage 7 writes the Post-Implementation Report's own figures to
+            # charts/pir. They are browsed separately rather than stacked with
+            # the rest: a post-campaign run produces two per LGA, which would
+            # bury the state-level charts above them.
+            pir_dir = os.path.join(r["charts"], "pir")
+            pir_pngs = image_files(pir_dir)
+            if pir_pngs:
+                with st.expander(f"Post-Implementation Report figures "
+                                 f"({len(pir_pngs)})"):
+                    pir_sel = st.selectbox("Preview figure", pir_pngs,
+                                           key="pir_chart_preview")
+                    st.image(os.path.join(pir_dir, pir_sel),
+                             use_container_width=True)
+

@@ -47,6 +47,27 @@ def pkl_load(ckpt, name):
         return pickle.load(f)
 
 
+def _tag(args) -> str:
+    """The scope fragment for this run's OUTPUT FILENAMES.
+
+    `day_3` for a daily run, `postcampaign` for the final report — see
+    `stage2_analysis.output_tag`. Column names (`day_{N}_cumm`,
+    `day_{N}_daily`) are NOT affected and stay day-based: they are how a run
+    chains onto the previous one, and nobody reads a column name off a report.
+    """
+    return output_tag(args.day, getattr(args, "analysis_type", "daily"))
+
+def _title_scope(args) -> str:
+    """The phrase printed after the em-dash in a map's title.
+
+    Baked into the PNG, so a post-campaign map captioned "— Day 1" carries the
+    day into the final report where no check on the deck's text can see it. The
+    campaign name goes there instead.
+    """
+    if getattr(args, "analysis_type", "daily") == "post_campaign":
+        return getattr(args, "campaign_name", None) or "Whole Campaign"
+    return f"Day {args.day}"
+
 def step_merge(args, state, t0):
     """Resumable merge: appends one source CSV at a time."""
     import csv as csvmod
@@ -122,7 +143,7 @@ def step_scan(args, state, t0):
     # re-resolving against a partially-read file.
     track_date = state.get("track_date", "__unset__")
     if track_date == "__unset__":
-        from stage2_analysis import latest_track_date
+        from stage2_analysis import latest_track_date, output_tag
         track_date = (None if args.analysis_type == "post_campaign"
                       else latest_track_date(merged))
         state["track_date"] = track_date
@@ -261,7 +282,8 @@ def step_dip(args, state, t0):
     import geopandas as gpd
     from stage2_analysis import (find_col, construct_unique, set_cumulative_visitation,
                                  detect_day_column, get_activity_day_col,
-                                 classify_coverage, classify_time_spent)
+                                 classify_coverage, classify_time_spent,
+                                 coerce_coverage)
     ckpt = args.ckpt
     summary = pkl_load(ckpt, "summary.pkl")
 
@@ -310,8 +332,12 @@ def step_dip(args, state, t0):
                     right_index=True, how="left")
     dip = dip.merge(pkl_load(ckpt, "daily_summary.pkl"), left_on="unique",
                     right_index=True, how="left")
-    both = dip[["Coverage", "Prev_Coverage"]].astype(float)
-    dip["Coverage"] = both.max(axis=1)
+    # Same rule, and the same trap, as `stage2_analysis.run_analysis`: this
+    # used `.astype(float)`, which raises on the first non-numeric value in
+    # either column. `coerce_coverage` reports what it drops instead.
+    dip["Coverage"] = np.fmax(
+        coerce_coverage(dip["Coverage"], "Coverage"),
+        coerce_coverage(dip["Prev_Coverage"], "Prev_Coverage"))
 
     # Cumulative evidence of tracks — see stage2_analysis.run_analysis for why
     # both sources are needed and why the rule is applied here rather than by
@@ -348,7 +374,7 @@ def step_dip(args, state, t0):
                       "Total", "Visited", "Not Yet Visited"],
              inplace=True, errors="ignore")
 
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     dip.to_csv(out_csv, index=False)
     print(f"Saved {out_csv}")
 
@@ -364,7 +390,7 @@ def step_dip(args, state, t0):
         for status, name in [("Visited", "visited"), ("Not Visited", "not_visited")]:
             sub = g[g[cum_col] == status]
             if len(sub):
-                sub.to_file(os.path.join(args.output, f"{name}_day_{args.day}.geojson"),
+                sub.to_file(os.path.join(args.output, f"{name}_{_tag(args)}.geojson"),
                             driver="GeoJSON")
 
     # persist updated TA for next day's cumulative run
@@ -377,16 +403,17 @@ def step_erm(args, state, t0):
     from stage3_erm_workbook import build_workbook_from_agg
     ckpt = args.ckpt
     teams = pkl_load(ckpt, "teams.pkl")
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     is_pc = args.analysis_type == "post_campaign"
     wb = os.path.join(args.output, f"{args.state}_PostCampaign_ERM_Analysis.xlsx") if is_pc \
         else os.path.join(args.output, f"{args.state}_Day_{args.day}_Vaccination_Tracking_ERM_Analysis.xlsx")
     build_workbook_from_agg(out_csv, teams, f"day_{args.day}_cumm", args.day, args.state, wb,
-                            deploy_csv=os.path.join(args.output, f"team_deploy_day_{args.day}.csv"),
-                            time_csv=os.path.join(args.output, f"time_spent_day_{args.day}.csv"),
-                            flagged_csv=os.path.join(args.output, f"flagged_teams_day_{args.day}.csv"),
+                            deploy_csv=os.path.join(args.output, f"team_deploy_{_tag(args)}.csv"),
+                            time_csv=os.path.join(args.output, f"time_spent_{_tag(args)}.csv"),
+                            flagged_csv=os.path.join(args.output, f"flagged_teams_{_tag(args)}.csv"),
                             analysis_type=args.analysis_type,
-                            teams_deployed_total=args.teams_deployed)
+                            teams_deployed_total=args.teams_deployed,
+                            tracks_file=os.path.join(args.output, "merged_tracks.csv"))
     state["steps"]["erm"] = "done"
     return True
 
@@ -394,10 +421,10 @@ def step_erm(args, state, t0):
 def step_charts(args, state, t0):
     from stage_charts import generate_charts
     charts_dir = os.path.join(args.output, "charts")
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     generate_charts(out_csv, f"day_{args.day}_cumm",
-                    os.path.join(args.output, f"team_deploy_day_{args.day}.csv"),
-                    os.path.join(args.output, f"time_spent_day_{args.day}.csv"),
+                    os.path.join(args.output, f"team_deploy_{_tag(args)}.csv"),
+                    os.path.join(args.output, f"time_spent_{_tag(args)}.csv"),
                     args.day, charts_dir, analysis_type=args.analysis_type,
                     daily_col=f"day_{args.day}_daily",
                     track_date=state.get("track_date"),
@@ -420,7 +447,7 @@ def _dual_map_inputs(args, lga_spec):
     if lga_spec is None or not lga_spec.is_multi_map:
         return None, None
 
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     extents = settlement_extents_gdf(getattr(args, "voronoi", None), out_csv,
                                      f"day_{args.day}_cumm")
     grids = None
@@ -439,7 +466,7 @@ def _dual_map_inputs(args, lga_spec):
     if grids is None:
         # a resumed run whose checkpoint predates this step can still use the
         # file stage 2 writes, if one is lying next to the outputs
-        for name in (f"gridded_ta_day_{args.day}.parquet", f"gridded_ta_day_{args.day}.gpkg"):
+        for name in (f"gridded_ta_{_tag(args)}.parquet", f"gridded_ta_{_tag(args)}.gpkg"):
             grids = gridded_ta_gdf(os.path.join(args.output, name))
             if grids is not None:
                 break
@@ -470,7 +497,7 @@ def step_maps(args, state, t0):
     os.makedirs(maps_dir, exist_ok=True)
     done_maps = set(state.get("maps_done", []))
 
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     points = settlements_gdf(out_csv, f"day_{args.day}_cumm")
     _pl = next((c for c in points.columns if "lga" in c.lower() and "code" not in c.lower()), None)
     boundaries = load_boundaries(args.lga_boundaries, args.state,
@@ -523,10 +550,10 @@ def step_maps(args, state, t0):
         if job == "__statewide__":
             fig = render_map_figure(
                 boundaries, points,
-                f"{args.state} State Settlement Visitation Coverage — Day {args.day}",
+                f"{args.state} State Settlement Visitation Coverage — {_title_scope(args)}",
                 lga_label_col=lga_name_col, lga_label_size=15, logo=args.logo,
                 role="statewide", spec=statewide_spec)
-            p = os.path.join(maps_dir, f"{args.state}_statewide_day_{args.day}.png")
+            p = os.path.join(maps_dir, f"{args.state}_statewide_{_tag(args)}.png")
             dpi = _figure_dpi(statewide_spec)
         else:
             b = boundaries[boundaries[lga_name_col].astype(str) == job]
@@ -553,10 +580,10 @@ def step_maps(args, state, t0):
                 if not len(pts):
                     pts = gpd.clip(points, b)
                 fig = render_map_figure(b, pts,
-                                        f"{job} LGA Settlement Visitation — Day {args.day}",
+                                        f"{job} LGA Settlement Visitation — {_title_scope(args)}",
                                         wards=w, ward_label_col=ward_name_col, logo=args.logo,
                                         is_lga=True, role="lga", spec=single_panel_spec)
-            p = os.path.join(maps_dir, f"{args.state}_{safe_name(job)}_day_{args.day}.png")
+            p = os.path.join(maps_dir, f"{args.state}_{safe_name(job)}_{_tag(args)}.png")
             dpi = lga_dpi
         fig.savefig(p, dpi=dpi, facecolor="white")
         plt.close(fig)
@@ -579,10 +606,10 @@ def step_report(args, state, t0):
         state["steps"]["report"] = "done"
         return True
     from stage5_report import build_report
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     build_report(args.state, args.day, out_csv, f"day_{args.day}_cumm",
-                 os.path.join(args.output, f"team_deploy_day_{args.day}.csv"),
-                 os.path.join(args.output, f"time_spent_day_{args.day}.csv"),
+                 os.path.join(args.output, f"team_deploy_{_tag(args)}.csv"),
+                 os.path.join(args.output, f"time_spent_{_tag(args)}.csv"),
                  os.path.join(args.output, "maps"),
                  os.path.join(args.output,
                               f"{args.state}_Day_{args.day}_Daily_Tracking_Report_DRAFT.docx"),
@@ -598,11 +625,11 @@ def step_pptx_report(args, state, t0):
         state["steps"]["pptx_report"] = "done"
         return True
     from stage6_pptx_report import build_pptx_report
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
     build_pptx_report(
         args.pptx_template, args.state, args.day, out_csv, f"day_{args.day}_cumm",
-        os.path.join(args.output, f"team_deploy_day_{args.day}.csv"),
-        os.path.join(args.output, f"time_spent_day_{args.day}.csv"),
+        os.path.join(args.output, f"team_deploy_{_tag(args)}.csv"),
+        os.path.join(args.output, f"time_spent_{_tag(args)}.csv"),
         os.path.join(args.output, "maps"), os.path.join(args.output, "charts"),
         os.path.join(args.output, f"{args.state}_Day_{args.day}_Report.pptx"),
         campaign_name=args.campaign_name, state_logo_path=args.state_logo,
@@ -616,16 +643,27 @@ def step_pir_report(args, state, t0):
         state["steps"]["pir_report"] = "done"
         return True
     from stage7_pir_report import build_pir_report
-    out_csv = os.path.join(args.output, f"{args.state}_day_{args.day}_settlement_visitation.csv")
+    out_csv = os.path.join(args.output, f"{args.state}_{_tag(args)}_settlement_visitation.csv")
+    # Built by FILLING the organization's "Post Implementation Report" deck, so
+    # the output is a .pptx in the stakeholder format, not a .docx.
+    ta = os.path.join(args.output, f"gridded_ta_{_tag(args)}.parquet")
+    if not os.path.exists(ta):
+        ta = os.path.join(args.output, f"gridded_ta_{_tag(args)}.gpkg")
+    # No team-deploy CSV and no device mix: team deployment is an
+    # implementation-monitoring measure and is not reported after the campaign.
     build_pir_report(
         args.state, out_csv, f"day_{args.day}_cumm",
-        os.path.join(args.output, f"team_deploy_day_{args.day}.csv"),
-        os.path.join(args.output, f"time_spent_day_{args.day}.csv"),
+        os.path.join(args.output, f"time_spent_{_tag(args)}.csv"),
         os.path.join(args.output, "maps"),
-        os.path.join(args.output, f"{args.state}_Post_Implementation_Report.docx"),
+        os.path.join(args.output, f"{args.state}_Post_Implementation_Report.pptx"),
         args.logo, campaign_name=args.campaign_name,
         charts_folder=os.path.join(args.output, "charts"), state_logo=args.state_logo,
-        template_path=args.pir_template)
+        template_path=args.pir_template,
+        voronoi_file=args.voronoi,
+        gridded_ta_file=ta if os.path.exists(ta) else None,
+        tracks_file=os.path.join(args.output, "merged_tracks.csv"))
+    for note in getattr(build_pir_report, "notes", []) or []:
+        print(f"  NOTE: {note}")
     state["steps"]["pir_report"] = "done"
     return True
 
@@ -670,14 +708,14 @@ def main():
     ap.add_argument("--analysis-type", choices=["daily", "post_campaign"], default="daily",
                     help="'daily' builds the Daily ERM Analysis tab + daily .docx/.pptx report. "
                     "'post_campaign' builds a Post-Campaign Analysis tab + a Post-Implementation "
-                    "Report (PIR) .docx instead.")
+                    "Report (PIR) .pptx instead.")
     ap.add_argument("--teams-deployed", type=int, default=None,
                     help="Manually-entered total teams deployed — overrides the settlement-list-"
                     "derived count and drives Teams Reported/Pending/Reporting %% throughout.")
     ap.add_argument("--pir-template", default=None,
-                    help="Post Implementation Report sample/template — auto-detected next to "
-                    "this script if not given; used as the reporting template when "
-                    "--analysis-type post_campaign builds the PIR .docx.")
+                    help="Post Implementation Report .pptx — auto-detected next to this "
+                    "script if not given. Stage 7 BUILDS the PIR by filling this deck, so "
+                    "it must be a .pptx, not a .pdf/.docx.")
     args = ap.parse_args()
 
     os.makedirs(args.output, exist_ok=True)

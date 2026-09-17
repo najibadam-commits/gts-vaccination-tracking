@@ -13,6 +13,9 @@ import os
 import numpy as np
 import pandas as pd
 
+from coordinate_quality import usable_coordinates
+from stage_charts import VISITED_C, NOT_VISITED_C, WITH_COORDS_C, WITHOUT_COORDS_C
+
 COVERAGE_ORDER = ["Fully Covered", "Partially Covered", "Low Coverage",
                   "Very Low Coverage", "No Coverage"]
 TIME_ORDER = ["0 (No evidence of tracks)", "<12 mins", "12 - 30 mins",
@@ -123,7 +126,8 @@ def scope_tracks_to_date(tracks_teams: pd.DataFrame,
 
 
 def team_deploy_report(dip: pd.DataFrame, tracks_teams: pd.DataFrame,
-                       teams_deployed_total: int | None = None) -> pd.DataFrame:
+                       teams_deployed_total: int | None = None,
+                       geo: dict | None = None) -> pd.DataFrame:
     """Teams deployed (from DIP team codes) vs teams reported (submitted tracks), per LGA.
 
     `teams_deployed_total`, if given, is the analyst's manually-entered total teams
@@ -139,17 +143,52 @@ def team_deploy_report(dip: pd.DataFrame, tracks_teams: pd.DataFrame,
 
     deployed = (dip.dropna(subset=[team_col]).groupby(lga_col)[team_col].nunique()
                 if team_col else pd.Series(dtype=int))
-    reported = tracks_teams.groupby("lga")["team_code"].nunique()
 
-    report = pd.DataFrame({"Teams Deployed": deployed, "Teams Reported": reported}).fillna(0).astype(int)
+    # Teams Reported comes from the SPATIAL attribution when it is available:
+    # team codes with at least one valid track whose coordinates fall inside
+    # the campaign state, deduplicated.
+    #
+    # The previous version grouped the raw national aggregate by the export's
+    # own LGA label. That had no state filter, so it counted every state in the
+    # export — 157 LGAs across 16 — and it summed per-LGA nunique into the
+    # Grand Total, so a team working two LGAs counted twice. On a real campaign
+    # it returned 4,960 reported against 200 deployed, and Pending clipped to
+    # 0; where the LGA labels matched nothing it returned 0 and Pending came
+    # back equal to Deployed, which is the symptom that was reported.
+    if geo is not None:
+        from track_geo import reported_team_codes
+        reported_codes = reported_team_codes(geo)
+        by_lga = geo["by_lga_team"].set_index("LGA")["Teams"] if len(geo["by_lga_team"]) \
+            else pd.Series(dtype=int)
+        reported = norm_lga(pd.Series(by_lga.index)).values
+        reported = pd.Series(by_lga.values, index=reported)
+        gt_reported = len(reported_codes)
+    else:
+        reported = tracks_teams.groupby("lga")["team_code"].nunique()
+        gt_reported = int(tracks_teams["team_code"].nunique())
+        print("  WARNING: no spatial attribution available — Teams Reported "
+              "falls back to the export's own LGA labels, which are not "
+              "state-scoped. Pass tracks_file and the boundary layers.")
+
+    deployed.index = norm_lga(pd.Series(deployed.index)).values
+    report = pd.DataFrame({"Teams Deployed": deployed,
+                           "Teams Reported": reported}).fillna(0).astype(int)
     report["Teams Pending"] = (report["Teams Deployed"] - report["Teams Reported"]).clip(lower=0)
     report.index.name = "LGA"
-    report.loc["Grand Total"] = report.sum()
 
-    if teams_deployed_total is not None:
-        gt_reported = int(report.loc["Grand Total", "Teams Reported"])
-        report.loc["Grand Total", "Teams Deployed"] = int(teams_deployed_total)
-        report.loc["Grand Total", "Teams Pending"] = max(int(teams_deployed_total) - gt_reported, 0)
+    # The Grand Total is NOT the column sum. Per-LGA rows count a team in every
+    # LGA it entered (26 teams crossed a boundary in the campaign this was
+    # built against), so summing them overstates the state figure. The totals
+    # row uses the unique team count instead, and the two are meant to differ.
+    report.loc["Grand Total"] = [int(report["Teams Deployed"].sum()), gt_reported, 0]
+    deployed_total = (int(teams_deployed_total) if teams_deployed_total is not None
+                      else int(report.loc["Grand Total", "Teams Deployed"]))
+    report.loc["Grand Total", "Teams Deployed"] = deployed_total
+    report.loc["Grand Total", "Teams Pending"] = max(deployed_total - gt_reported, 0)
+    if gt_reported > deployed_total:
+        print(f"  NOTE: {gt_reported:,} teams transmitted tracks inside the "
+              f"state but only {deployed_total:,} were entered as deployed — "
+              f"Pending shown as 0. Check the deployed figure.")
 
     denom = report["Teams Deployed"].replace(0, np.nan)
     report["Reporting %"] = (report["Teams Reported"] / denom).fillna(0).round(3)
@@ -157,12 +196,17 @@ def team_deploy_report(dip: pd.DataFrame, tracks_teams: pd.DataFrame,
 
 
 def coordinates_table(dip: pd.DataFrame) -> pd.DataFrame:
-    """Settlements with vs without geo-coordinates, per LGA (planned-settlement list)."""
+    """Settlements with vs without geo-coordinates, per LGA (planned-settlement list).
+
+    "With coordinates" is `coordinate_quality.usable_coordinates`, the same rule
+    the Post-Implementation Report uses. It used to be `notna().all(axis=1)`
+    here, which counted a blank string, an "N/A", a (0, 0) null-island pair and
+    a latitude of 601 as perfectly good coordinates — so this table and the
+    report's completeness slide could put different numbers on the same
+    campaign, with nothing to say which was right.
+    """
     lga_col = next(c for c in dip.columns if "lga" in c.lower() and "code" not in c.lower())
-    lat_col = next((c for c in dip.columns if "latitude" in c.lower()), None)
-    lon_col = next((c for c in dip.columns if "longitude" in c.lower()), None)
-    has_geo = (dip[[lat_col, lon_col]].notna().all(axis=1)
-              if lat_col and lon_col else pd.Series(False, index=dip.index))
+    has_geo = usable_coordinates(dip)
 
     tbl = pd.DataFrame({"LGA": norm_lga(dip[lga_col]), "has_geo": has_geo})
     out = tbl.groupby("LGA")["has_geo"].sum().rename("With Coordinates").astype(int)
@@ -208,7 +252,9 @@ def not_visited_ranked_table(dip: pd.DataFrame, cum_col: str) -> pd.DataFrame:
 
 
 def time_spent_analysis(tracks_teams: pd.DataFrame, dip: pd.DataFrame,
-                        report_date: str | None = "latest"
+                        report_date: str | None = "latest",
+                        geo: dict | None = None,
+                        teams_deployed_total: int | None = None
                         ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Counts 2-min pings per team within 08:00-15:00 and classifies time spent.
 
@@ -224,9 +270,40 @@ def time_spent_analysis(tracks_teams: pd.DataFrame, dip: pd.DataFrame,
     tracks_teams, scoped_to = scope_tracks_to_date(tracks_teams, report_date)
     if scoped_to:
         print(f"  time spent scoped to tracks transmitted on {scoped_to}")
+
+    # STATE SCOPE. GTS exports are national — the file this was built against
+    # carried 157 LGAs across 16 states — and this function had no state filter
+    # at all, so every state's teams landed in the campaign's bands. The scope
+    # is the set of team codes whose tracks actually fall inside the campaign
+    # state, taken from the spatial attribution rather than from the export's
+    # own labels.
+    if geo is not None:
+        from track_geo import reported_team_codes
+        in_state = reported_team_codes(geo)
+        before = tracks_teams["team_code"].nunique()
+        tracks_teams = tracks_teams[
+            tracks_teams["team_code"].astype(str).str.strip().isin(in_state)]
+        print(f"  time spent scoped to the campaign state by spatial overlay: "
+              f"{tracks_teams['team_code'].nunique():,} of {before:,} team "
+              f"codes in the export transmitted inside it")
+    else:
+        print("  WARNING: time spent is NOT state-scoped — no spatial "
+              "attribution was supplied, so a national export will count "
+              "every state's teams.")
+
     field = tracks_teams[(tracks_teams["hour"] >= FIELD_START) &
                          (tracks_teams["hour"] < FIELD_END)]
-    per_team = field.groupby(["lga", "team_code"])["pings"].sum().reset_index()
+    # Grouped by TEAM ONLY. Grouping by (lga, team_code) put a team that
+    # crossed an LGA boundary into two bands and counted it twice; the bands
+    # describe teams, so a team has to appear in exactly one of them. The LGA
+    # a team is reported under is its dominant one — where most of its field
+    # pings fell — so the column is still usable for follow-up.
+    per_team = field.groupby("team_code")["pings"].sum().reset_index()
+    dominant = (field.sort_values("pings", ascending=False)
+                .drop_duplicates("team_code")[["team_code", "lga"]])
+    per_team = per_team.merge(dominant, on="team_code", how="left")
+    per_team["lga"] = per_team["lga"].fillna("")
+    per_team = per_team[["lga", "team_code", "pings"]]
     per_team["minutes"] = per_team["pings"] * 2
 
     def classify(mins):
@@ -244,13 +321,23 @@ def time_spent_analysis(tracks_teams: pd.DataFrame, dip: pd.DataFrame,
 
     per_team["Time Spent"] = per_team["minutes"].apply(classify)
 
-    # teams deployed but with no tracks at all
-    team_col = next((c for c in dip.columns if "team" in c.lower() and "code" in c.lower()), None)
-    n_no_tracks = 0
-    if team_col:
-        deployed_teams = set(dip[team_col].dropna().astype(str))
-        reported_teams = set(tracks_teams["team_code"].astype(str))
-        n_no_tracks = len(deployed_teams - reported_teams)
+    # Teams deployed but with no tracks at all.
+    #
+    # This used to be `set(settlement list team codes) - set(track team codes)`.
+    # Those two namespaces do not overlap — the settlement list uses `GOR-025`,
+    # the export uses `ZAM/BUG/BEL/003`, and the raw intersection is 0 of 3,067
+    # — so the subtraction returned EVERY deployed team and this band alone
+    # contributed 3,067 to a grand total of 4,213. It is now derived from the
+    # counts that are comparable: how many were deployed, less how many
+    # actually transmitted inside the state.
+    n_reported = int(per_team["team_code"].nunique())
+    if teams_deployed_total:
+        n_no_tracks = max(int(teams_deployed_total) - n_reported, 0)
+    else:
+        team_col = next((c for c in dip.columns
+                         if "team" in c.lower() and "code" in c.lower()), None)
+        n_deployed = int(dip[team_col].dropna().nunique()) if team_col else 0
+        n_no_tracks = max(n_deployed - n_reported, 0)
 
     summary = per_team.groupby("Time Spent").size().reindex(TIME_ORDER).fillna(0).astype(int)
     summary.loc["0 (No evidence of tracks)"] = n_no_tracks
@@ -301,7 +388,8 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
                             deploy_csv: str | None = None, time_csv: str | None = None,
                             flagged_csv: str | None = None,
                             analysis_type: str = "daily",
-                            teams_deployed_total: int | None = None) -> str:
+                            teams_deployed_total: int | None = None,
+                            tracks_file: str | None = None) -> str:
     """`analysis_type="daily"` (default) writes a "Daily ERM Analysis" sheet scoped
     to this reporting day — unchanged behaviour. `analysis_type="post_campaign"`
     writes a "Post-Campaign Analysis" sheet instead: pass the FINAL day's `cum_col`
@@ -360,13 +448,45 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
               "settlement list. Check that the settlement list is for the same "
               "state and campaign as these tracks.")
 
-    deploy = team_deploy_report(dip, tracks_teams, teams_deployed_total=teams_deployed_total)
+    # SPATIAL ATTRIBUTION — computed once here and threaded through everything
+    # that needs to know which teams belong to this campaign's state. Every
+    # figure that used to be derived by matching the export's name/code strings
+    # against the settlement list's now comes from where the tracks physically
+    # are. Costs one extra pass over the export; buys figures that reconcile.
+    geo = None
+    if tracks_file and os.path.exists(tracks_file):
+        try:
+            from track_geo import analyse as analyse_geo
+            here = os.path.dirname(os.path.abspath(__file__))
+
+            def _boundary(name):
+                for folder in (here, os.path.dirname(here), os.getcwd()):
+                    cand = os.path.join(folder, name)
+                    if os.path.exists(cand):
+                        return cand
+                return None
+
+            geo = analyse_geo(
+                tracks_file, state, _boundary("state.sqlite"),
+                _boundary("LGA.sqlite"),
+                report_date=None if analysis_type == "post_campaign" else "latest")
+            if not geo["meta"]["total_teams"]:
+                print("  WARNING: no track fell inside the state boundary — "
+                      "check the state name and the boundary layer")
+                geo = None
+        except Exception as exc:
+            print(f"  spatial track attribution unavailable ({exc}) — falling "
+                  f"back to the export's own labels, which are not state-scoped")
+
+    deploy = team_deploy_report(dip, tracks_teams,
+                                teams_deployed_total=teams_deployed_total, geo=geo)
     # Daily analysis reports the day the tracks were transmitted, so time spent
     # is scoped to the latest date in the export. The post-campaign analysis
     # deliberately spans the whole period and passes None.
     time_summary, per_team = time_spent_analysis(
         tracks_teams, dip,
-        report_date=None if analysis_type == "post_campaign" else "latest")
+        report_date=None if analysis_type == "post_campaign" else "latest",
+        geo=geo, teams_deployed_total=teams_deployed_total)
 
     # Team performance / time-spent-range breakdown. A second, finer view of
     # time spent (State -> LGA -> Ward -> team, from the settlement analysis'
@@ -399,16 +519,46 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
     except Exception as exc:
         print(f"Target population analysis skipped ({exc})")
 
-    # Team Time Efficiency — field minutes against grid-weighted coverage, and
-    # the >2hr / <50% follow-up list. Optional like the others: an older
-    # visitation CSV without the grid-cell columns costs these tabs only.
+    # Team Time Efficiency — actual clock start/end against the 08:00-16:00
+    # operational window, and the flagged-team follow-up list. Needs the RAW
+    # track export (start/end times don't exist in the settlement-level `dip`),
+    # so it costs the tabs and the flagged CSV, not the workbook, when one isn't
+    # available. `report_date=None` for post-campaign spans every date, matching
+    # `time_spent_analysis()`'s branch above.
     teff = None
-    try:
-        from team_efficiency import analyse as analyse_team_efficiency, describe as _te_desc
-        teff = analyse_team_efficiency(dip, "cumulative")
-        print(f"Team time efficiency: {_te_desc(teff)}")
-    except Exception as exc:
-        print(f"Team efficiency analysis skipped ({exc})")
+    if tracks_file and os.path.exists(tracks_file):
+        try:
+            from team_efficiency import (analyse as analyse_team_efficiency,
+                                         describe as _te_desc)
+            from team_daily_time import scope_from_visitation
+            teff = analyse_team_efficiency(
+                tracks_file, dip,
+                report_date=None if analysis_type == "post_campaign" else "latest",
+                scope=scope_from_visitation(dip))
+            print(f"Team time efficiency: {_te_desc(teff)}")
+        except Exception as exc:
+            print(f"Team efficiency analysis skipped ({exc})")
+    else:
+        print("Team efficiency analysis skipped (no merged track export given)")
+
+    # Tracking sessions — the drill-down behind the sessions figures on the
+    # Time Spent slide. Needs the RAW track export, not the aggregated
+    # `tracks_teams` frame, because sessions are cut from ping timestamps and
+    # that frame has already collapsed them. Callers that have the file pass
+    # it; those that don't simply lose these two tabs.
+    tsess = None
+    if tracks_file and os.path.exists(tracks_file):
+        try:
+            from team_sessions import (analyse as analyse_sessions,
+                                       describe as _ts_desc)
+            from team_daily_time import scope_from_visitation
+            tsess = analyse_sessions(tracks_file, "latest",
+                                     scope=scope_from_visitation(dip))
+            print(f"Tracking sessions: {_ts_desc(tsess)}")
+            if not len(tsess["per_team"]):
+                tsess = None
+        except Exception as exc:
+            print(f"Tracking session analysis skipped ({exc})")
     state_cov, lga_cov, visit = coverage_tables(dip, cum_col)
     is_pc = analysis_type == "post_campaign"
     sheet_name = "Post-Campaign Analysis" if is_pc else "Daily ERM Analysis"
@@ -521,42 +671,196 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
                     ws.set_column(c, c, 12, pct)
             note = n + 5
             ws.write(note, 0,
-                     f"Flag = more than {m['long_field_minutes']} minutes in the field "
-                     f"AND under {m['low_coverage']:.0%} gridded area coverage. "
-                     f"Minutes = track pings x {m['ping_minutes']}. "
-                     f"Coverage = {m['coverage_basis']}.")
+                     f"Team Time Efficiency = Effective Operational Duration "
+                     f"(minutes tracked inside the {m['window']} window, gaps "
+                     f"over 15 min excluded) ÷ {m['window_minutes']} minutes.")
             ws.write(note + 1, 0,
                      f"{m['flagged_teams']:,} of {m['total_teams']:,} teams flagged "
-                     f"({m['flagged_pct']:.1%}).")
+                     f"({m['flagged_pct']:.1%}). Average efficiency "
+                     f"{m['avg_efficiency_pct']:.1f}%. A team can meet more than one "
+                     f"flag rule; every reason that applies is listed.")
+            reason_line = ("Flagged by reason: "
+                          + "; ".join(f"{k} ({v:,})" for k, v
+                                     in m.get("reason_counts", {}).items())
+                          if m.get("reason_counts") else "No team was flagged.")
+            ws.write(note + 2, 0, reason_line)
 
-            # EVERY flagged team, both reasons in one list — the sheet an LGA
-            # supervisor works from. A team meeting both rules appears once
-            # with a combined reason, so the row count is the number of teams
-            # to follow up, which is what the slide narration quotes.
+            # EVERY flagged team, every applicable reason, in one list — the
+            # sheet an LGA supervisor works from. Worst efficiency first.
             fl = teff["flagged_table"]
             ws2 = write_table("Flagged Teams", fl, 2,
                               f"Teams flagged for supervisory follow-up — {label}")
             if not len(fl):
-                ws2.write(4, 0, "No team met either flag criterion.")
+                ws2.write(4, 0, "No team met any flag criterion.")
             else:
-                widths = {"Team": 16, "LGA": 18, "Time Spent (hrs)": 16,
-                          "% Grid Covered": 15, "Flag/Reason": 42,
-                          "Cells Visited": 13, "Grid Cells": 12,
-                          "Settlements": 12}
+                widths = {"State": 14, "LGA": 18, "Ward": 16, "Team": 16,
+                          "Team Date": 12, "Start Time": 11, "End Time": 11,
+                          "Total Recorded Duration (min)": 16,
+                          "Effective Operational Duration (min)": 18,
+                          "Team Time Efficiency (%)": 14, "Pings": 9,
+                          "Flag/Status": 11, "Reason for Flagging": 46}
                 for c, col in enumerate(fl.columns):
                     ws2.set_column(c, c, widths.get(col, 14))
                 ws2.write(len(fl) + 4, 0,
-                          f"{m['flagged_any']:,} teams flagged in total: "
-                          f"{m['flagged_teams']:,} over "
-                          f"{m['long_field_minutes'] // 60} hrs with under "
-                          f"{m['low_coverage']:.0%} coverage, "
-                          f"{m['stationary_teams']:,} stationary "
-                          f"(<= {m['stationary_max_cells']} grid cell). "
-                          f"A team meeting both is listed once.")
-            if len(teff["matrix"]):
-                write_table("Efficiency by LGA", teff["matrix"], 2,
-                            f"Teams per efficiency quadrant, by LGA — {label}")
+                          f"{len(fl):,} teams flagged. Reasons: "
+                          + "; ".join(f"{k} ({v:,})" for k, v
+                                     in m.get("reason_counts", {}).items()))
+
+            # Rollup by LGA: flagged count and average efficiency, so a state
+            # coordinator can see which LGAs need attention without reading
+            # every team row.
+            by_lga = (teff["per_team"].groupby("LGA")
+                     .agg(Teams=("Team", "size"),
+                          Flagged=("Flag/Status", lambda s: int((s == "Flagged").sum())),
+                          **{"Avg Efficiency (%)": ("Team Time Efficiency (%)", "mean")})
+                     .reset_index().sort_values("Flagged", ascending=False))
+            by_lga["Avg Efficiency (%)"] = by_lga["Avg Efficiency (%)"].round(1)
+            if len(by_lga):
+                write_table("Efficiency by LGA", by_lga, 2,
+                            f"Flagged teams and average efficiency, by LGA — {label}")
             teff["per_team"].to_excel(xl, sheet_name="Team Efficiency Data", index=False)
+
+        # --- Validation
+        # One tab that reconciles every headline figure back to the source
+        # export, so a reader can check the deck rather than trust it. The two
+        # deliberate inequalities are stated as such: the LGA columns sum above
+        # the state totals because a team that crossed a boundary is counted in
+        # each LGA, and Teams Reported is not a subset of Teams Deployed
+        # because the two identifier namespaces do not overlap.
+        if geo is not None:
+            gm = geo["meta"]
+            gt = deploy[deploy["LGA"] == "Grand Total"]
+            n_dep = int(gt["Teams Deployed"].iloc[0]) if len(gt) else 0
+            n_rep = int(gt["Teams Reported"].iloc[0]) if len(gt) else 0
+            n_pen = int(gt["Teams Pending"].iloc[0]) if len(gt) else 0
+            checks = [
+                ("Campaign state", gm["state"], "from the state boundary layer"),
+                ("Tracking date", gm["date"], "latest date with tracks in-state"),
+                ("Valid GPS points in state", gm["total_pings"],
+                 "Valid != 0, coordinates inside the state polygon"),
+                ("Unique team codes in state", gm["total_teams"],
+                 "distinct Team Code, counted once however many LGAs"),
+                ("Unique devices (IMEI) in state", gm["total_devices"],
+                 "distinct IMEI, counted once however many LGAs"),
+                ("Tracks (sessions) in state", gm["total_tracks"],
+                 "runs of pings; a gap over 15 min starts a new track"),
+                ("LGAs with tracks", gm["n_lgas"], "distinct LGA polygons entered"),
+                ("Teams crossing an LGA boundary", gm["multi_lga_teams"],
+                 "counted in every LGA they entered"),
+                ("Sum of per-LGA team counts", gm["lga_sum_teams"],
+                 "EXCEEDS unique teams by the boundary-crossers above — expected"),
+                ("Sum of per-LGA device counts", gm["lga_sum_devices"],
+                 "same rule as teams"),
+                ("Pings not inside any LGA polygon", gm["unattributed_pings"],
+                 "shown as 'Unattributed'; a large figure means a boundary-layer problem"),
+                ("Devices with no team code", gm.get("unassigned_devices", 0),
+                 "counted as devices, excluded from team figures — this is why "
+                 "device and team totals differ"),
+                ("Pings with no team code", gm.get("unassigned_pings", 0),
+                 "transmitted by the devices above"),
+                ("Teams Deployed", n_dep, "analyst-entered, or unique team codes in the settlement list"),
+                ("Teams Reported", n_rep, "unique team codes with >=1 valid track inside the state"),
+                ("Teams Pending", n_pen, "Deployed - Reported, floored at 0"),
+                ("Teams in a time-spent band", int(per_team["team_code"].nunique()),
+                 "unique teams transmitting within 08:00-15:00"),
+            ]
+            if n_rep > n_dep:
+                checks.append(
+                    ("CHECK Teams Deployed", "Reported exceeds Deployed",
+                     f"{n_rep:,} teams transmitted inside the state but "
+                     f"{n_dep:,} were entered as deployed — verify the entered figure"))
+            # The hierarchy's own funnel and assertions, from track_geo: day ->
+            # track -> overlay -> state of interest -> unique team -> time
+            # spent. Prepended, because a reader checking the deck should see
+            # the population narrow before they see anything derived from it.
+            try:
+                from track_geo import validate as validate_geo
+                funnel = validate_geo(geo).rename(
+                    columns={"Check": "Figure"})
+                checks = list(funnel.itertuples(index=False, name=None)) + \
+                    [("", "", "")] + checks
+            except Exception as exc:
+                print(f"  spatial validation table unavailable ({exc})")
+
+            vdf = pd.DataFrame(checks, columns=["Figure", "Value", "How it is derived"])
+            vws = write_table("Validation", vdf, 2,
+                              f"Figure-by-figure reconciliation — {label}")
+            vws.set_column(0, 0, 34)
+            vws.set_column(1, 1, 18)
+            vws.set_column(2, 2, 74)
+
+        # --- Tracking Sessions
+        # The slide reports one median and one fragmented count; this is where
+        # a supervisor finds out WHICH teams and WHICH devices are behind them,
+        # which is the whole point of the figure appearing on the slide.
+        if tsess is not None:
+            sm = tsess["meta"]
+            sheet = "Tracking Sessions"
+            ws = write_table(sheet, tsess["by_lga"], 2,
+                             f"Tracking sessions per team, by LGA — {label}")
+            n = len(tsess["by_lga"])
+            ws.write(n + 4, 0,
+                     f"A session is a run of pings with no gap longer than "
+                     f"{sm['session_gap_minutes']:g} minutes — the same gap the "
+                     f"Time Spent analysis excludes as 'not tracking', so a "
+                     f"team's minutes are the total length of its sessions and "
+                     f"its session count is how many pieces that total arrived "
+                     f"in. Rows flagged Valid = 0 are excluded before sessions "
+                     f"are cut.")
+            ws.write(n + 5, 0,
+                     f"{sm['total_teams']:,} teams on {sm['date']}: median "
+                     f"{sm['median_sessions']:.0f}, longest {sm['max_sessions']}, "
+                     f"{sm['single_session_teams']:,} "
+                     f"({sm['single_session_pct']:.1%}) tracked in a single "
+                     f"session, {sm['fragmented_teams']:,} "
+                     f"({sm['fragmented_pct']:.1%}) in "
+                     f"{sm['fragmented_threshold']} or more.")
+
+            if n:
+                chart = wb.add_chart({"type": "column"})
+                col_i = list(tsess["by_lga"].columns).index("Fragmented Teams")
+                chart.add_series({
+                    "name": "Fragmented teams",
+                    "categories": [sheet, 4, 0, 3 + n, 0],
+                    "values": [sheet, 4, col_i, 3 + n, col_i],
+                    "data_labels": {"value": True},
+                })
+                chart.set_title({"name": f"Teams tracking in "
+                                         f"{sm['fragmented_threshold']}+ sessions, "
+                                         f"by LGA — {label}"})
+                chart.set_legend({"none": True})
+                chart.set_size({"width": 720, "height": 380})
+                ws.insert_chart(n + 8, 0, chart)
+
+            tsess["per_team"].to_excel(xl, sheet_name="Session Data (Team)", index=False)
+
+        # --- Tracks per LGA, the two tables behind the new slides
+        if geo is not None and len(geo["by_lga_team"]):
+            note = (f"Each row counts distinct identifiers whose GPS points fall "
+                    f"inside that LGA's boundary. A team or device that worked "
+                    f"more than one LGA is counted in each, so these columns sum "
+                    f"above the state totals on the Validation tab.")
+            ws = write_table("Tracks by LGA (Team)", geo["by_lga_team"], 2,
+                             f"Tracks per Team Code by LGA — {label}")
+            ws.write(len(geo["by_lga_team"]) + 4, 0, note)
+            if len(geo["by_lga_dev"]):
+                ws = write_table("Tracks by LGA (Device)", geo["by_lga_dev"], 2,
+                                 f"Tracks per Device (IMEI) by LGA — {label}")
+                ws.write(len(geo["by_lga_dev"]) + 4, 0, note)
+            # Devices shared across team codes lead, since that is the finding
+            # that needs acting on rather than browsing.
+            if len(tsess["per_device"]):
+                dev = tsess["per_device"].sort_values(
+                    ["Teams", "Sessions"], ascending=False).reset_index(drop=True)
+                dws = write_table("Session Data (Device)", dev, 2,
+                                  f"Tracking sessions per device — {label}")
+                dws.set_column(1, 1, 24)
+                if sm["shared_devices"]:
+                    dws.write(len(dev) + 4, 0,
+                              f"{sm['shared_devices']:,} of {sm['total_devices']:,} "
+                              f"devices transmitted under more than one team code "
+                              f"on this date — neither team's track can be "
+                              f"attributed with confidence.")
 
         # --- Target Population & Household Coverage
         # Daily first, cumulative underneath as context. Never merged: daily is
@@ -595,7 +899,8 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
                         "name": series,
                         "categories": [sheet, row + 2, 0, row + 1 + n, 0],
                         "values": [sheet, row + 2, col_i, row + 1 + n, col_i],
-                        "fill": {"color": "#1e6b30" if i == 0 else "#e79a96"},
+                        "fill": {"color": VISITED_C if i == 0
+                                 else NOT_VISITED_C},
                     })
                 chart.set_title({"name": heading})
                 chart.set_size({"width": 560, "height": 300})
@@ -663,6 +968,27 @@ def build_workbook_from_agg(visitation_csv: str, tracks_teams: pd.DataFrame, cum
             ws.write(r2, 0, "Settlements With vs Without Geo-Coordinates", title_fmt)
             for c, col in enumerate(coords_tbl.columns):
                 ws.write(r2 + 1, c, col, hdr)
+
+            body = coords_tbl[coords_tbl["LGA"] != "Grand Total"]
+            if len(body):
+                n_c = len(body)
+                coord_chart = wb.add_chart({"type": "column",
+                                            "subtype": "stacked"})
+                for i, (series, fill) in enumerate(
+                        [("With Coordinates", WITH_COORDS_C),
+                         ("Without Coordinates", WITHOUT_COORDS_C)]):
+                    coord_chart.add_series({
+                        "name": series,
+                        "categories": [sheet_name, r2 + 2, 0, r2 + 1 + n_c, 0],
+                        "values": [sheet_name, r2 + 2, 1 + i, r2 + 1 + n_c,
+                                   1 + i],
+                        "fill": {"color": fill},
+                    })
+                coord_chart.set_title(
+                    {"name": "Planned Settlements by LGA: With vs Without "
+                             "Geo-Coordinates"})
+                coord_chart.set_size({"width": 780, "height": 400})
+                ws.insert_chart(r2 + n_c + 5, 6, coord_chart)
 
             r3 = r2 + len(coords_tbl) + 4
             ranked_nv.to_excel(xl, sheet_name=sheet_name, startrow=r3 + 1, index=False)

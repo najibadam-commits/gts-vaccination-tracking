@@ -22,7 +22,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from stage1_merge import merge_tracks
-from stage2_analysis import run_analysis
+from stage2_analysis import run_analysis, output_tag
 from stage3_erm_workbook import build_workbook_from_agg, load_tracks_teams
 from stage4_maps import generate_maps
 from stage5_report import build_report
@@ -69,7 +69,7 @@ def main():
     ap.add_argument("--analysis-type", choices=["daily", "post_campaign"], default="daily",
                     help="'daily' (default) builds the Daily ERM Analysis workbook tab and the "
                     "daily .docx/.pptx report. 'post_campaign' builds a Post-Campaign Analysis "
-                    "workbook tab instead and a Post-Implementation Report (PIR) .docx — pass the "
+                    "workbook tab instead and a Post-Implementation Report (PIR) .pptx — pass the "
                     "FINAL day's --day/--prev-dip chain and, ideally, all campaign days' tracks "
                     "in --tracks-folder so team deployment and time-spent reflect the whole campaign.")
     ap.add_argument("--teams-deployed", type=int, default=None,
@@ -77,9 +77,9 @@ def main():
                     "overrides the settlement-list-derived count and drives Teams "
                     "Reported/Pending/Reporting %% throughout the workbook and report.")
     ap.add_argument("--pir-template", default=None,
-                    help="Post Implementation Report sample/template — auto-detected next to "
-                    "this script if not given; used as the reporting template when "
-                    "--analysis-type post_campaign builds the PIR .docx.")
+                    help="Post Implementation Report .pptx — auto-detected next to this "
+                    "script if not given. Stage 7 BUILDS the PIR by filling this deck, so "
+                    "it must be a .pptx (the sample the team presents), not a .pdf/.docx.")
     args = ap.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -97,11 +97,16 @@ def main():
     # Daily runs count only the latest transmission date, so a merged export
     # spanning several days cannot report the campaign to date as one day's
     # work. Post-campaign deliberately spans the whole period.
+    # Output filenames are stamped with what the run COVERS, not with a day a
+    # whole-campaign report has no use for. Columns keep their day names — see
+    # `stage2_analysis.output_tag`.
+    file_tag = output_tag(args.day, args.analysis_type)
     result = run_analysis(
         args.settlements, tracks_path, args.gridded_ta, args.voronoi,
         args.state, args.day, args.mopup, args.output,
         prev_ta_file=args.prev_ta, prev_dip_file=args.prev_dip,
-        track_date=None if args.analysis_type == "post_campaign" else "latest")
+        track_date=None if args.analysis_type == "post_campaign" else "latest",
+        tag=file_tag)
     cum_col = result["cum_col"]
     daily_col = result.get("daily_col")
     visitation_csv = result["visitation_csv"]
@@ -123,13 +128,14 @@ def main():
     # multi-million-row file twice)
     dip = pd.read_csv(visitation_csv, low_memory=False)
     teams = load_tracks_teams(tracks_path)
-    deploy_csv = os.path.join(args.output, f"team_deploy_day_{args.day}.csv")
-    time_csv = os.path.join(args.output, f"time_spent_day_{args.day}.csv")
-    flagged_csv = os.path.join(args.output, f"flagged_teams_day_{args.day}.csv")
+    deploy_csv = os.path.join(args.output, f"team_deploy_{file_tag}.csv")
+    time_csv = os.path.join(args.output, f"time_spent_{file_tag}.csv")
+    flagged_csv = os.path.join(args.output, f"flagged_teams_{file_tag}.csv")
     build_workbook_from_agg(visitation_csv, teams, cum_col, args.day, args.state, workbook_path,
                             deploy_csv=deploy_csv, time_csv=time_csv,
                             flagged_csv=flagged_csv,
-                            analysis_type=args.analysis_type, teams_deployed_total=args.teams_deployed)
+                            analysis_type=args.analysis_type, teams_deployed_total=args.teams_deployed,
+                            tracks_file=tracks_path)
 
     # Stage 4 — charts + maps
     print("\n========== STAGE 4: CHARTS & COVERAGE MAPS ==========")
@@ -164,17 +170,31 @@ def main():
                   args.day, maps_folder, args.logo, args.wards,
                   voronoi_file=args.voronoi,
                   gridded_ta_file=result.get("ta_parquet"),
-                  state_logo=args.state_logo)
+                  state_logo=args.state_logo,
+                  tag=file_tag,
+                  # Baked into the PNG, so a map captioned "— Day 1" carries
+                  # the day into the final report.
+                  title_scope=(args.campaign_name if is_pc else None))
 
     if args.analysis_type == "post_campaign":
-        # Stage 7 — Post-Implementation Report (PIR), whole-campaign view
+        # Stage 7 — Post-Implementation Report (PIR), whole-campaign view.
+        # Built by FILLING the organization's "Post Implementation Report" deck,
+        # so the output is a .pptx in the stakeholder format, not a .docx.
         print("\n========== STAGE 7: POST-IMPLEMENTATION REPORT (PIR) ==========")
         from stage7_pir_report import build_pir_report
-        report_path = os.path.join(args.output, f"{args.state}_Post_Implementation_Report.docx")
-        build_pir_report(args.state, visitation_csv, cum_col, deploy_csv, time_csv,
+        report_path = os.path.join(args.output, f"{args.state}_Post_Implementation_Report.pptx")
+        # No deploy_csv and no device mix: team deployment is an
+        # implementation-monitoring measure and is not reported after the
+        # campaign. It stays in the workbook's Team Deploy-Report tab.
+        build_pir_report(args.state, visitation_csv, cum_col, time_csv,
                          maps_folder, report_path, args.logo,
                          campaign_name=args.campaign_name, charts_folder=charts_folder,
-                         state_logo=args.state_logo, template_path=args.pir_template)
+                         state_logo=args.state_logo, template_path=args.pir_template,
+                         voronoi_file=args.voronoi,
+                         gridded_ta_file=result.get("ta_parquet"),
+                         tracks_file=tracks_path)
+        for note in getattr(build_pir_report, "notes", []) or []:
+            print(f"  NOTE: {note}")
     else:
         # Stage 5 — report draft
         print("\n========== STAGE 5: REPORT DRAFT ==========")
@@ -195,7 +215,8 @@ def main():
                               cum_col, deploy_csv, time_csv, maps_folder, charts_folder,
                               pptx_path, campaign_name=args.campaign_name,
                               state_logo_path=args.state_logo,
-                              tracks_file=tracks_path)
+                              tracks_file=tracks_path,
+                              track_date=track_date)
 
     print("\n========== PIPELINE COMPLETE ==========")
     print(f"All outputs in: {args.output}")

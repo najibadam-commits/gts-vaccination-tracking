@@ -43,12 +43,30 @@ _RULES: dict[str, tuple[tuple[str, ...], tuple[tuple[tuple[str, ...], tuple[str,
              ((("team", "code"), ()), (("team",), ()))),
     "lga":  (("nga lga 2024 label", "lga", "lga name", "lga_name"),
              ((("lga",), ("code", "id", "pcode")),)),
+    "ward": (("nga ward 2024 label", "ward", "ward name", "ward_name"),
+             ((("ward",), ("code", "id", "pcode")),)),
     "ts":   (("gps timestamp (utc)", "gps timestamp", "timestamp", "datetime",
               "date time", "time"),
              ((("timestamp",), ()), (("gps", "time"), ()), (("date", "time"), ()))),
     "state": (("nga state 2024 label", "state", "state name", "state_name"),
               ((("state",), ("code", "id", "pcode")),)),
+    # The tracking device. GTS exports call it IMEI even though the value is a
+    # 16-hex-character Android ID rather than a true IMEI; other exporters call
+    # it device id. Excluded terms keep this off "Device Model" and similar.
+    "device": (("imei", "device id", "device_id", "deviceid", "device"),
+               ((("imei",), ()), (("device",), ("model", "type", "name")))),
+    # Row-level validity flag the exporter sets: 1 = usable fix, 0 = not.
+    # "valid" alone would also match "Validation Status", hence the exclusions.
+    "valid": (("valid", "is valid", "is_valid", "valid flag"),
+              ((("valid",), ("date", "status", "reason", "until")),)),
 }
+
+# Values of the `valid` column that mean "usable fix". Compared as STRINGS: a
+# raw GTS export mixes int and object dtypes for this column across chunk files,
+# so `df["Valid"] == 0` matches nothing on the chunks pandas typed as object and
+# silently keeps every invalid row. Normalising to string removes the trap.
+VALID_TRUE = frozenset({"1", "1.0", "true", "t", "yes", "y"})
+VALID_FALSE = frozenset({"0", "0.0", "false", "f", "no", "n"})
 
 # Timestamp layouts seen in GTS exports, tried in order. The first is the
 # format the pipeline has always assumed; the rest cover the common exporter
@@ -110,7 +128,8 @@ def require(resolved: dict[str, str | None], roles, columns, what: str) -> None:
     if not missing:
         return
     labels = {"lat": "latitude", "lon": "longitude", "team": "team code",
-              "lga": "LGA name", "ts": "GPS timestamp", "state": "state name"}
+              "lga": "LGA name", "ward": "ward name", "ts": "GPS timestamp",
+              "state": "state name", "device": "device/IMEI", "valid": "valid flag"}
     raise ValueError(
         f"{what} needs a {', '.join(labels.get(r, r) for r in missing)} column "
         f"in the track export, and none of its columns look like one.\n"
@@ -145,6 +164,18 @@ def parse_timestamps(series: pd.Series) -> pd.Series:
             return pd.to_datetime(series, format=fmt, errors="coerce")
 
     return pd.to_datetime(series, errors="coerce", dayfirst=False)
+
+
+def valid_mask(series: pd.Series) -> pd.Series:
+    """True where the export's `Valid` flag says the fix is usable.
+
+    Unrecognised values are treated as VALID rather than dropped. The flag is
+    there to mark bad fixes, not to whitelist good ones, so an exporter using a
+    vocabulary this module has not seen should cost the analysis nothing —
+    whereas defaulting to invalid would silently empty the whole dataset.
+    """
+    norm = series.astype(str).str.strip().str.lower()
+    return ~norm.isin(VALID_FALSE)
 
 
 def describe(resolved: dict[str, str | None]) -> str:

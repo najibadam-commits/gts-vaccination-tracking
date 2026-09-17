@@ -47,7 +47,7 @@ or the working directory — `_find_default` in `app.py`):
 | `LGA.sqlite` | LGA boundaries for the maps | 11 MB |
 | `Ward.sqlite` | Ward boundaries | 23 MB |
 | `state.sqlite` | State boundaries | 8 MB |
-| `organization's reporting template.pptx` | the deck stage 6 fills | 11 MB |
+| `eHA_Revised_reporting_template.pptx` | the deck stage 6 fills — **not yet in the repo, see below** | 59 MB |
 | `*.qpt`, `*.qgz` | QGIS map layouts driving stage 4 | <1 MB |
 | `eha_logo.png`, `ehealthafrica blue.png` | branding | small |
 
@@ -188,6 +188,31 @@ The repository is public, so two files were dealt with first:
   the .docx metadata. Without it stage 7 uses its built-in layout and the PIR
   content is unchanged. Your local copy is untouched and `--pir-template` still
   accepts it when running locally.
+
+### OPEN — the revised template is not deployed yet
+
+Stage 6 now targets `eHA_Revised_reporting_template.pptx`, which sits in
+`GTS_Automation/`, one level ABOVE the repo. Locally the app finds it there.
+**On Streamlit Cloud only the repo is deployed, so it will not be found** and
+`_find_default_pptx()` falls back to the old `organization's reporting template
+.pptx` — printing a warning, and building a deck whose slide order stage 6 no
+longer matches. Until this is resolved, cloud runs must upload the template
+through the app's own uploader, which overrides the default.
+
+Three ways to close it, in order of preference:
+
+1. **Slim it and commit it.** 58.8 MB of the 59 MB is 46 embedded PNGs — the
+   previous run's maps and charts. Stage 6 REPLACES every one of them, so a
+   copy with those parts downsampled is functionally identical and lands around
+   1-2 MB. Checked: the deck carries **no staff photographs** (the Deployment
+   and ERM picture slides are empty placeholders), so this is a size decision,
+   not a privacy one. It does still carry Zamfara's real coverage figures in the
+   slide text, which are aggregate statistics rather than the GPS traces and
+   population estimates `.gitignore` exists to keep out.
+2. **Commit it as-is.** Under GitHub's 100 MB hard limit but over the 50 MB
+   warning threshold, and it bloats every clone.
+3. **Keep uploading it per run.** No repo change; costs the analyst a step each
+   day and leaves the fallback path live.
 
 If you ever make a repo like this public *after* committing such files,
 remember that deleting them in a later commit does **not** remove them from
