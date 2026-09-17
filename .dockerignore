@@ -1,0 +1,49 @@
+# Keep the image to what the app needs. Mirrors .gitignore's intent: no
+# campaign data, no generated output, no local-only reference material.
+.git
+.github
+.devcontainer
+.vscode
+.idea
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.streamlit/secrets.toml
+deploy/private/
+
+# campaign data and pipeline outputs
+Tracks_*.csv
+merged_tracks.csv
+*_tracks.csv
+settlement*.csv
+*settlement*.csv
+Day*_out*/
+*_outputs/
+outputs/
+.ckpt/
+charts/
+maps/
+pir_preview/
+*.parquet
+*.geojson
+dt.csv
+tr.csv
+tr2.csv
+
+# QGIS working layers (the three boundary files are needed)
+*.sqlite
+!LGA.sqlite
+!Ward.sqlite
+!state.sqlite
+*.qmd
+
+# reference material and private decks
+*sample*.pdf
+*sample*.xlsx
+GTS_Pipeline_Workflow_eHA.pptx
+Post Implementation Report*.pptx
+pipeline_flow_diagram.png
+*.md
+!README.md

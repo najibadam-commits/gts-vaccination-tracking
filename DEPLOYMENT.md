@@ -1,5 +1,10 @@
 # Deploying the GTS pipeline
 
+> **Moving off Streamlit Community Cloud?** The app now ships as a Docker
+> container with ready-made configs for a self-hosted server (recommended)
+> and Render. See **[deploy/README.md](deploy/README.md)**. The rest of this
+> file covers Community Cloud.
+
 Everything needed to put this repo on GitHub and run it on Streamlit Community
 Cloud, plus an honest account of what the free tier can and cannot do with it.
 
@@ -189,7 +194,14 @@ The repository is public, so two files were dealt with first:
   content is unchanged. Your local copy is untouched and `--pir-template` still
   accepts it when running locally.
 
-### OPEN — the revised template is not deployed yet
+### RESOLVED — the revised template now ships slimmed (option 1 below)
+
+`eHA_Revised_reporting_template.pptx` in the repo is the approved deck run
+through `slim_template.py` (59.6 MB -> 5.4 MB, branding untouched), and
+`test_revised_template_slide_map.py` passes against it. Its branding images
+are byte-identical to ones already in `organization's reporting
+template.pptx`. The history of the problem is kept below.
+
 
 Stage 6 now targets `eHA_Revised_reporting_template.pptx`, which sits in
 `GTS_Automation/`, one level ABOVE the repo. Locally the app finds it there.

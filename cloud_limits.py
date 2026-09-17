@@ -30,6 +30,7 @@ HOSTED_ENV_MARKERS = (
     "DYNO",                         # Heroku
     "K_SERVICE",                    # Cloud Run
     "WEBSITE_INSTANCE_ID",          # Azure App Service
+    "GTS_HOSTED",                   # set explicitly by deploy/ configs for a small host
 )
 
 # Set GTS_FORCE_LOCAL=1 to run without caps on a big self-hosted machine that

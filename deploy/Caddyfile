@@ -1,0 +1,15 @@
+# SITE_ADDRESS is a domain (gts.example.org -> automatic HTTPS) or ":80"
+# (plain HTTP on the server's IP, for a first test only).
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# Campaign uploads carry GPS traces and team codes: nobody gets in
+	# without the password. The hash comes from `caddy hash-password`.
+	basic_auth {
+		{$AUTH_USER} {$AUTH_HASH}
+	}
+
+	# Streamlit keeps a WebSocket open for the whole session; Caddy passes it
+	# through and applies no read timeout, so long pipeline runs are not cut.
+	reverse_proxy app:8501
+}

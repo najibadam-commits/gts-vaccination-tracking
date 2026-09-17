@@ -1,0 +1,53 @@
+# GTS pipeline on your own server: the app plus Caddy in front of it.
+#
+#   Caddy   HTTPS (automatic certificate when SITE_ADDRESS is a domain),
+#           a username/password gate, and WebSocket pass-through for Streamlit.
+#   app     the pipeline container (Dockerfile), never exposed directly.
+#
+# First time: run deploy/setup-ubuntu.sh, which writes .env and starts this.
+# By hand:    cp deploy/env.example .env  (fill it in), then
+#             docker compose up -d --build
+# Update:     deploy/update.sh
+#
+# See deploy/README.md.
+
+services:
+  app:
+    build: .
+    image: gts-pipeline:latest
+    restart: unless-stopped
+    environment:
+      # A server has room for a full day's exports, unlike Community Cloud.
+      STREAMLIT_SERVER_MAX_UPLOAD_SIZE: ${UPLOAD_MB:-2000}
+      STREAMLIT_SERVER_MAX_MESSAGE_SIZE: ${UPLOAD_MB:-2000}
+      # Set GTS_HOSTED=1 in .env on a small (<4 GB) machine to turn on the
+      # memory guard rails in cloud_limits.py (120 dpi maps, size warnings).
+      GTS_HOSTED: ${GTS_HOSTED:-}
+    volumes:
+      # Private templates that must not go into the public repo, e.g.
+      # "Post Implementation Report 2026.pptx". The app finds them here.
+      - ./deploy/private:/srv/gts/private:ro
+    expose:
+      - "8501"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      AUTH_USER: ${AUTH_USER:-gts}
+      AUTH_HASH: ${AUTH_HASH:?set AUTH_HASH in .env - run deploy/setup-ubuntu.sh or see deploy/README.md}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

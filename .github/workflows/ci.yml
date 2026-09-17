@@ -1,0 +1,45 @@
+name: CI
+
+# Builds the real container image, runs every regression script inside it,
+# and checks the app boots. A green run means the image a server would build
+# from this commit works.
+on:
+  push:
+  pull_request:
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t gts-pipeline .
+
+      - name: Regression tests inside the image
+        run: |
+          docker run --rm --entrypoint sh gts-pipeline -c '
+            cd /srv/gts/private
+            fail=0
+            for t in /srv/gts/app/test_*.py; do
+              echo "::group::$(basename "$t")"
+              python "$t" || { echo "::error::$(basename "$t") failed"; fail=1; }
+              echo "::endgroup::"
+            done
+            exit $fail'
+
+      - name: App boots and reports healthy
+        run: |
+          docker run -d --name gts -p 8501:8501 gts-pipeline
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health; then echo; exit 0; fi
+            sleep 2
+          done
+          docker logs gts
+          exit 1
+
+      - name: Compose file is valid
+        run: |
+          printf "SITE_ADDRESS=:80\nAUTH_USER=ci\nAUTH_HASH='x'\n" > .env
+          docker compose config --quiet

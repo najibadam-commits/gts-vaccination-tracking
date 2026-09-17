@@ -29,12 +29,23 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stage6_pptx_report as s6
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE = os.path.join(os.path.dirname(HERE), "eHA_Revised_reporting_template.pptx")
+
+
+def _find_template(name):
+    """The template one level up (local layout) or in the repo itself
+    (the slimmed copy a hosted deploy and CI use), in that order."""
+    for folder in (os.path.dirname(HERE), HERE):
+        cand = os.path.join(folder, name)
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(os.path.dirname(HERE), name)
+
+
+TEMPLATE = _find_template("eHA_Revised_reporting_template.pptx")
 # The proposed template carrying the Tracking Sessions slide. Both are tested:
 # an analyst running last month's approved template must still get a correct
 # deck, just without that slide.
-TEMPLATE_V2 = os.path.join(os.path.dirname(HERE),
-                           "eHA_Revised_reporting_template_v2.pptx")
+TEMPLATE_V2 = _find_template("eHA_Revised_reporting_template_v2.pptx")
 SESSIONS_TITLE = "Tracking Sessions by Team & Device"
 DEVICE_LGA_TITLE = "Tracks per Device (IMEI) by LGA"
 TEAM_LGA_TITLE = "Tracks per Team Code by LGA"

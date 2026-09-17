@@ -15,7 +15,10 @@
 maxUploadSize = 400
 maxMessageSize = 400
 enableXsrfProtection = true
-enableCORS = false
+# CORS stays ON. With it off, Streamlit >= 1.5x sends
+# `Access-Control-Allow-Origin: *`, letting any website call the app. No host
+# this app runs on (VM behind Caddy, Render, Community Cloud) needs it off.
+enableCORS = true
 
 [browser]
 gatherUsageStats = false
